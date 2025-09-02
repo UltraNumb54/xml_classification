@@ -1,93 +1,190 @@
-import tensorflow as tf
-from tensorflow.keras import layers, models
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-import numpy as np
 import os
-
-# Конфигурация
-IMG_SIZE = (150, 150)
-BATCH_SIZE = 32
-EPOCHS = 10
-DATA_DIR = "data"  # Папка с подпапками классов
-
-# Data Augmentation
-train_datagen = ImageDataGenerator(
-    rescale=1./255,
-    validation_split=0.2,
-    shear_range=0.2,
-    zoom_range=0.2,
-    horizontal_flip=True
-)
-
-# Генераторы данных
-train_generator = train_datagen.flow_from_directory(
-    DATA_DIR,
-    target_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_mode='categorical',
-    subset='training'
-)
-
-val_generator = train_datagen.flow_from_directory(
-    DATA_DIR,
-    target_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_mode='categorical',
-    subset='validation'
-)
-
-# Компактная модель
-model = models.Sequential([
-    layers.Conv2D(32, (3, 3), activation='relu', input_shape=(*IMG_SIZE, 3)),
-    layers.MaxPooling2D(2, 2),
-    layers.Conv2D(64, (3, 3), activation='relu'),
-    layers.MaxPooling2D(2, 2),
-    layers.Conv2D(128, (3, 3), activation='relu'),
-    layers.MaxPooling2D(2, 2),
-    layers.Flatten(),
-    layers.Dense(512, activation='relu'),
-    layers.Dropout(0.5),
-    layers.Dense(len(train_generator.class_indices), activation='softmax')
-])
-
-model.compile(
-    optimizer='adam',
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
-)
-
-# Обучение
-history = model.fit(
-    train_generator,
-    epochs=EPOCHS,
-    validation_data=val_generator,
-    verbose=1
-)
-
-# Сохранение модели
-model.save('model/image_classifier.keras')
-np.save('model/class_indices.npy', train_generator.class_indices)
-
-import tensorflow as tf
-from tensorflow.keras.preprocessing import image
+import cv2
 import numpy as np
-import os
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
+import joblib
+from PIL import Image
 
-# Загрузка модели
-model = tf.keras.models.load_model('model/image_classifier.keras')
-class_indices = np.load('model/class_indices.npy', allow_pickle=True).item()
+def extract_features(image_path, size=(64, 64)):
+    """Извлечение признаков из изображения"""
+    try:
+        # Загрузка и изменение размера изображения
+        image = Image.open(image_path).convert('RGB')
+        image = image.resize(size)
+        image_array = np.array(image)
+        
+        # Простые признаки: гистограммы по каналам
+        features = []
+        for channel in range(3):
+            hist = cv2.calcHist([image_array], [channel], None, [16], [0, 256])
+            features.extend(hist.flatten())
+        
+        # Средние значения по каналам
+        means = np.mean(image_array, axis=(0, 1))
+        features.extend(means)
+        
+        # Стандартные отклонения
+        stds = np.std(image_array, axis=(0, 1))
+        features.extend(stds)
+        
+        return np.array(features)
+    except Exception as e:
+        print(f"Ошибка обработки {image_path}: {e}")
+        return None
 
-def predict_image(img_path):
-    img = image.load_img(img_path, target_size=(150, 150))
-    img_array = image.img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
+def load_dataset(data_path):
+    """Загрузка датасета из папки с подпапками классов"""
+    features = []
+    labels = []
+    class_folders = [f for f in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, f))]
     
-    predictions = model.predict(img_array)
-    predicted_class = list(class_indices.keys())[np.argmax(predictions)]
+    print("Найдены классы:", class_folders)
     
-    return predicted_class, np.max(predictions)
+    for class_name in class_folders:
+        class_path = os.path.join(data_path, class_name)
+        if not os.path.isdir(class_path):
+            continue
+            
+        print(f"Обработка класса: {class_name}")
+        image_files = [f for f in os.listdir(class_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        for image_file in image_files:
+            image_path = os.path.join(class_path, image_file)
+            feature_vector = extract_features(image_path)
+            
+            if feature_vector is not None:
+                features.append(feature_vector)
+                labels.append(class_name)
+    
+    return np.array(features), np.array(labels)
 
-# Пример использования
+def main():
+    data_path = "data"  # Путь к папке с данными
+    model_path = "model"  # Путь для сохранения модели
+    
+    # Создаем папку для модели, если её нет
+    os.makedirs(model_path, exist_ok=True)
+    
+    print("Загрузка и обработка изображений...")
+    X, y = load_dataset(data_path)
+    
+    if len(X) == 0:
+        print("Не найдено изображений для обработки!")
+        return
+    
+    print(f"Загружено {len(X)} изображений")
+    
+    # Кодируем метки классов
+    le = LabelEncoder()
+    y_encoded = le.fit_transform(y)
+    
+    # Сохраняем кодировщик меток
+    joblib.dump(le, os.path.join(model_path, "label_encoder.pkl"))
+    
+    # Разделяем на обучающую и тестовую выборки
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y_encoded, test_size=0.2, random_state=42
+    )
+    
+    print("Обучение модели...")
+    # Используем Random Forest как экономичный по памяти классификатор
+    model = RandomForestClassifier(
+        n_estimators=50,  # Меньше деревьев для экономии памяти
+        max_depth=10,
+        random_state=42,
+        n_jobs=-1  # Используем все ядра процессора
+    )
+    
+    model.fit(X_train, y_train)
+    
+    # Оценка точности
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"Точность на тестовых данных: {accuracy:.2f}")
+    
+    # Сохраняем модель
+    joblib.dump(model, os.path.join(model_path, "classifier.pkl"))
+    print("Модель успешно обучена и сохранена!")
+
 if __name__ == "__main__":
-    result = predict_image("test_image.jpg")
-    print(f"Class: {result[0]}, Confidence: {result[1]:.2f}")
+    main()
+
+import os
+import numpy as np
+import joblib
+from PIL import Image
+import cv2
+
+def extract_features(image_path, size=(64, 64)):
+    """Извлечение признаков из изображения (такая же функция как в обучении)"""
+    try:
+        image = Image.open(image_path).convert('RGB')
+        image = image.resize(size)
+        image_array = np.array(image)
+        
+        features = []
+        for channel in range(3):
+            hist = cv2.calcHist([image_array], [channel], None, [16], [0, 256])
+            features.extend(hist.flatten())
+        
+        means = np.mean(image_array, axis=(0, 1))
+        features.extend(means)
+        
+        stds = np.std(image_array, axis=(0, 1))
+        features.extend(stds)
+        
+        return np.array(features)
+    except Exception as e:
+        print(f"Ошибка обработки {image_path}: {e}")
+        return None
+
+def predict_image(image_path):
+    """Предсказание класса для одного изображения"""
+    # Загрузка модели и кодировщика
+    model = joblib.load("model/classifier.pkl")
+    le = joblib.load("model/label_encoder.pkl")
+    
+    # Извлечение признаков
+    features = extract_features(image_path)
+    if features is None:
+        return "Ошибка обработки изображения", 0
+    
+    # Предсказание
+    features = features.reshape(1, -1)
+    prediction = model.predict(features)[0]
+    probability = model.predict_proba(features)[0]
+    
+    # Декодирование предсказания
+    class_name = le.inverse_transform([prediction])[0]
+    confidence = np.max(probability)
+    
+    return class_name, confidence
+
+def predict_folder(folder_path):
+    """Предсказание для всех изображений в папке"""
+    results = []
+    image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    
+    for image_file in image_files:
+        image_path = os.path.join(folder_path, image_file)
+        class_name, confidence = predict_image(image_path)
+        results.append((image_file, class_name, confidence))
+    
+    return results
+
+if __name__ == "__main__":
+    # Пример использования для одного изображения
+    image_path = "test_image.jpg"  # Замените на путь к вашему изображению
+    class_name, confidence = predict_image(image_path)
+    print(f"Изображение: {image_path}")
+    print(f"Предсказанный класс: {class_name}")
+    print(f"Уверенность: {confidence:.2f}")
+    
+    # Пример для всей папки
+    # folder_path = "test_images"
+    # results = predict_folder(folder_path)
+    # for image_file, class_name, confidence in results:
+    #     print(f"{image_file}: {class_name} ({confidence:.2f})")
