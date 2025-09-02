@@ -1,0 +1,232 @@
+import os
+import tempfile
+import win32com.client
+from PIL import Image, ImageDraw, ImageFont
+import pythoncom
+import time
+
+def convert_docx_to_pdf(docx_path, pdf_path):
+    """Конвертирует DOCX в PDF используя Microsoft Word"""
+    pythoncom.CoInitialize()
+    try:
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = False
+        
+        doc = word.Documents.Open(docx_path)
+        doc.SaveAs(pdf_path, FileFormat=17)  # 17 = PDF format
+        doc.Close()
+        word.Quit()
+    except Exception as e:
+        print(f"Ошибка при конвертации DOCX в PDF: {e}")
+    finally:
+        pythoncom.CoUninitialize()
+
+def convert_pdf_to_image(pdf_path, image_path):
+    """Конвертирует первую страницу PDF в изображение используя Microsoft Word"""
+    pythoncom.CoInitialize()
+    try:
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = False
+        
+        # Открываем PDF в Word
+        doc = word.Documents.Open(pdf_path)
+        
+        # Экспортируем в XPS (промежуточный формат)
+        temp_xps = os.path.join(tempfile.gettempdir(), "temp.xps")
+        doc.ExportAsFixedFormat(
+            OutputFileName=temp_xps,
+            ExportFormat=18,  # wdExportFormatXPS
+            OpenAfterExport=False,
+            OptimizeFor=0,
+            Range=0,
+            From=1,
+            To=1,
+            Item=0,
+            IncludeDocProps=False,
+            KeepIRM=True,
+            CreateBookmarks=0,
+            DocStructureTags=True,
+            BitmapMissingFonts=True,
+            UseISO19005_1=False
+        )
+        
+        doc.Close()
+        word.Quit()
+        
+        # Конвертируем XPS в PNG с помощью Office XPS Viewer (если доступен)
+        try:
+            # Пытаемся использовать встроенные средства Windows
+            from PIL import Image
+            import subprocess
+            
+            # Используем xps2img или аналогичный инструмент
+            # Этот код может потребовать доработки в зависимости от системы
+            subprocess.run(['xps2img', temp_xps, image_path, '-f', 'png', '-p', '1'])
+        except:
+            # Резервный метод - создаем простое изображение с информацией
+            img = Image.new('RGB', (800, 600), color='white')
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 20)
+            except:
+                font = ImageFont.load_default()
+            
+            d.text((10, 10), f"Файл: {os.path.basename(pdf_path)}", fill='black', font=font)
+            d.text((10, 50), "Конвертация PDF в PNG не поддерживается", fill='black', font=font)
+            d.text((10, 90), "в данной конфигурации системы", fill='black', font=font)
+            img.save(image_path, 'PNG')
+        
+        # Удаляем временный XPS файл
+        if os.path.exists(temp_xps):
+            os.remove(temp_xps)
+            
+    except Exception as e:
+        print(f"Ошибка при конвертации PDF в изображение: {e}")
+        
+        # Создаем заглушку в случае ошибки
+        img = Image.new('RGB', (800, 600), color='white')
+        d = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("arial.ttf", 20)
+        except:
+            font = ImageFont.load_default()
+        
+        d.text((10, 10), f"Ошибка конвертации: {os.path.basename(pdf_path)}", fill='red', font=font)
+        d.text((10, 50), str(e), fill='black', font=font)
+        img.save(image_path, 'PNG')
+        
+    finally:
+        pythoncom.CoUninitialize()
+
+def convert_excel_to_image(excel_path, image_path, rows_to_show=15):
+    """Конвертирует Excel файл в изображение, показывая первые строки"""
+    pythoncom.CoInitialize()
+    try:
+        excel = win32com.client.Dispatch("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        
+        workbook = excel.Workbooks.Open(excel_path)
+        worksheet = workbook.ActiveSheet
+        
+        # Автоподбор ширины колонок для лучшего отображения
+        worksheet.Columns.AutoFit()
+        
+        # Определяем область для отображения
+        used_range = worksheet.UsedRange
+        end_row = min(rows_to_show, used_range.Rows.Count)
+        end_col = min(10, used_range.Columns.Count)
+        
+        # Выбираем область для копирования
+        range_to_copy = worksheet.Range(
+            worksheet.Cells(1, 1),
+            worksheet.Cells(end_row, end_col)
+        )
+        
+        # Копируем как изображение
+        range_to_copy.CopyPicture(Appearance=1, Format=2)
+        
+        # Даем время для обработки буфера обмена
+        time.sleep(1)
+        
+        # Сохраняем из буфера обмена
+        try:
+            from PIL import ImageGrab
+            img = ImageGrab.grabclipboard()
+            if img:
+                img.save(image_path, 'PNG')
+            else:
+                raise Exception("Не удалось получить изображение из буфера обмена")
+        except:
+            # Альтернативный метод - создаем изображение вручную
+            img = Image.new('RGB', (800, 600), color='white')
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 14)
+            except:
+                font = ImageFont.load_default()
+            
+            # Добавляем информацию о файле
+            d.text((10, 10), f"Файл: {os.path.basename(excel_path)}", fill='black', font=font)
+            d.text((10, 40), "Таблица слишком большая для отображения", fill='black', font=font)
+            d.text((10, 70), f"Показано первых {rows_to_show} строк", fill='black', font=font)
+            
+            # Сохраняем изображение
+            img.save(image_path, 'PNG')
+        
+        workbook.Close(False)
+        excel.Quit()
+        
+    except Exception as e:
+        print(f"Ошибка при конвертации Excel в изображение: {e}")
+        
+        # Создаем заглушку в случае ошибки
+        img = Image.new('RGB', (800, 600), color='white')
+        d = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("arial.ttf", 20)
+        except:
+            font = ImageFont.load_default()
+        
+        d.text((10, 10), f"Ошибка конвертации: {os.path.basename(excel_path)}", fill='red', font=font)
+        d.text((10, 50), str(e), fill='black', font=font)
+        img.save(image_path, 'PNG')
+        
+    finally:
+        pythoncom.CoUninitialize()
+
+def process_files(input_folder, output_folder):
+    """Обрабатывает все файлы в папке"""
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    
+    # Сначала конвертируем все DOCX в PDF
+    for filename in os.listdir(input_folder):
+        if filename.lower().endswith('.docx'):
+            docx_path = os.path.join(input_folder, filename)
+            pdf_filename = os.path.splitext(filename)[0] + '.pdf'
+            pdf_path = os.path.join(output_folder, pdf_filename)
+            
+            print(f"Конвертирую {filename} в PDF...")
+            convert_docx_to_pdf(docx_path, pdf_path)
+    
+    # Затем обрабатываем все PDF и Excel файлы
+    for filename in os.listdir(input_folder):
+        file_path = os.path.join(input_folder, filename)
+        
+        # Пропускаем подпапки
+        if os.path.isdir(file_path):
+            continue
+            
+        name_without_ext = os.path.splitext(filename)[0]
+        output_path = os.path.join(output_folder, name_without_ext + '.png')
+        
+        if filename.lower().endswith('.pdf'):
+            print(f"Обрабатываю PDF: {filename}...")
+            convert_pdf_to_image(file_path, output_path)
+            
+        elif filename.lower().endswith(('.xlsx', '.xls')):
+            print(f"Обрабатываю Excel: {filename}...")
+            convert_excel_to_image(file_path, output_path)
+    
+    # Обрабатываем PDF файлы, которые были созданы из DOCX
+    for filename in os.listdir(output_folder):
+        if filename.lower().endswith('.pdf'):
+            pdf_path = os.path.join(output_folder, filename)
+            name_without_ext = os.path.splitext(filename)[0]
+            output_path = os.path.join(output_folder, name_without_ext + '.png')
+            
+            print(f"Обрабатываю PDF (из DOCX): {filename}...")
+            convert_pdf_to_image(pdf_path, output_path)
+            
+            # Удаляем временный PDF файл
+            os.remove(pdf_path)
+
+if __name__ == "__main__":
+    input_folder = "путь_к_вашей_папке_с_файлами"
+    output_folder = "путь_к_папке_для_сохранения_изображений"
+    
+    process_files(input_folder, output_folder)
+    print("Обработка завершена!")
