@@ -1,116 +1,141 @@
 import os
-from pathlib import Path
 import tempfile
-import shutil
+import win32com.client
+from PIL import ImageGrab
+import pythoncom
+import time
 
-# Для обработки PDF
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    fitz = None
+def convert_docx_to_pdf(docx_path, pdf_path):
+    """Конвертирует DOCX в PDF используя Microsoft Word"""
+    pythoncom.CoInitialize()
+    try:
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = False
+        
+        doc = word.Documents.Open(docx_path)
+        doc.SaveAs(pdf_path, FileFormat=17)  # 17 = PDF format
+        doc.Close()
+        word.Quit()
+    finally:
+        pythoncom.CoUninitialize()
 
-# Для обработки Office-документов
-try:
-    from docx2pdf import convert as docx2pdf_convert
-    from comtypes import client
-except ImportError:
-    docx2pdf_convert = None
-    client = None
+def convert_excel_to_image(excel_path, image_path, rows_to_show=15):
+    """Конвертирует Excel файл в изображение, показывая первые строки"""
+    pythoncom.CoInitialize()
+    try:
+        excel = win32com.client.Dispatch("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        
+        workbook = excel.Workbooks.Open(excel_path)
+        worksheet = workbook.ActiveSheet
+        
+        # Выбираем область для отображения (первые rows_to_show строк и 10 колонок)
+        used_range = worksheet.UsedRange
+        end_row = min(rows_to_show, used_range.Rows.Count)
+        end_col = min(10, used_range.Columns.Count)
+        
+        range_to_copy = worksheet.Range(
+            worksheet.Cells(1, 1),
+            worksheet.Cells(end_row, end_col)
+        )
+        
+        # Копируем диапазон как изображение
+        range_to_copy.CopyPicture(Appearance=1, Format=2)  # 1 = Screen, 2 = Bitmap
+        
+        # Сохраняем изображение из буфера обмена
+        image = ImageGrab.grabclipboard()
+        if image:
+            # Масштабируем до размера, похожего на PDF страницу
+            target_width = 794  # Ширина A4 в пикселях при 96 DPI
+            ratio = target_width / image.width
+            target_height = int(image.height * ratio)
+            
+            resized_image = image.resize((target_width, target_height))
+            resized_image.save(image_path, 'PNG')
+        
+        workbook.Close(False)
+        excel.Quit()
+    finally:
+        pythoncom.CoUninitialize()
 
-def check_dependencies():
-    """Проверяет наличие необходимых библиотек"""
-    dependencies = []
-    if fitz is None:
-        dependencies.append('PyMuPDF')
-    if docx2pdf_convert is None:
-        dependencies.append('docx2pdf')
-    if client is None:
-        dependencies.append('comtypes')
+def convert_pdf_to_image(pdf_path, image_path):
+    """Конвертирует первую страницу PDF в изображение используя Microsoft Word"""
+    pythoncom.CoInitialize()
+    try:
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = False
+        
+        # Открываем PDF в Word
+        doc = word.Documents.Open(pdf_path)
+        
+        # Экспортируем первую страницу как изображение
+        temp_image_path = os.path.join(tempfile.gettempdir(), "temp_page.png")
+        doc.ExportAsFixedFormat(
+            OutputFileName=temp_image_path,
+            ExportFormat=17,  # wdExportFormatPDF
+            OpenAfterExport=False,
+            OptimizeFor=0,    # wdExportOptimizeForPrint
+            Range=0,          # wdExportAllDocument
+            From=1,
+            To=1,
+            Item=0,           # wdExportDocumentContent
+            IncludeDocProps=False,
+            KeepIRM=True,
+            CreateBookmarks=0, # wdExportCreateNoBookmarks
+            DocStructureTags=True,
+            BitmapMissingFonts=True,
+            UseISO19005_1=False
+        )
+        
+        # Переименовываем временный файл
+        if os.path.exists(temp_image_path):
+            os.rename(temp_image_path, image_path)
+        
+        doc.Close()
+        word.Quit()
+    finally:
+        pythoncom.CoUninitialize()
+
+def process_files(input_folder, output_folder):
+    """Обрабатывает все файлы в папке"""
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
     
-    if dependencies:
-        print(f"Отсутствуют библиотеки: {', '.join(dependencies)}")
-        print("Установите их через pip:")
-        print(f"pip install {' '.join(dependencies)}")
-        return False
-    return True
-
-def convert_to_images(input_folder, output_folder, target_format='png'):
-    """
-    Конвертирует PDF, DOCX и Excel файлы в изображения
-    используя только Python-библиотеки
-    """
-    if not check_dependencies():
-        return
-
-    input_path = Path(input_folder)
-    output_path = Path(output_folder)
-    output_path.mkdir(exist_ok=True)
-
-    # Временная папка для промежуточных файлов
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-
-        for file_path in input_path.glob('*.*'):
-            if file_path.suffix.lower() in ['.pdf', '.docx', '.xlsx']:
-                print(f"Обработка: {file_path.name}")
-
-                try:
-                    if file_path.suffix.lower() == '.pdf':
-                        # Конвертируем PDF напрямую
-                        pdf_to_images(file_path, output_path, target_format)
-                    
-                    elif file_path.suffix.lower() in ['.docx', '.xlsx']:
-                        # Сначала конвертируем в PDF
-                        pdf_temp_path = temp_path / f"{file_path.stem}.pdf"
-                        convert_to_pdf(file_path, pdf_temp_path)
-                        
-                        # Затем конвертируем PDF в изображения
-                        pdf_to_images(pdf_temp_path, output_path, target_format)
-                        
-                except Exception as e:
-                    print(f"Ошибка при обработке {file_path.name}: {str(e)}")
-
-def convert_to_pdf(input_file, output_file):
-    """Конвертирует DOCX/XLSX в PDF используя comtypes"""
-    try:
-        # Инициализация COM-объекта Word/Excel
-        if input_file.suffix.lower() == '.docx':
-            word = client.CreateObject("Word.Application")
-            word.Visible = False
-            doc = word.Documents.Open(str(input_file))
-            doc.SaveAs(str(output_file), FileFormat=17)
-            doc.Close()
-            word.Quit()
-        
-        elif input_file.suffix.lower() == '.xlsx':
-            excel = client.CreateObject("Excel.Application")
-            excel.Visible = False
-            wb = excel.Workbooks.Open(str(input_file))
-            wb.ExportAsFixedFormat(0, str(output_file))
-            wb.Close()
-            excel.Quit()
+    # Сначала конвертируем все DOCX в PDF
+    for filename in os.listdir(input_folder):
+        if filename.lower().endswith('.docx'):
+            docx_path = os.path.join(input_folder, filename)
+            pdf_filename = os.path.splitext(filename)[0] + '.pdf'
+            pdf_path = os.path.join(output_folder, pdf_filename)
             
-    except Exception as e:
-        raise Exception(f"Ошибка конвертации в PDF: {str(e)}")
-
-def pdf_to_images(pdf_path, output_path, target_format='png'):
-    """Конвертирует PDF в изображения используя PyMuPDF"""
-    try:
-        doc = fitz.open(pdf_path)
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            mat = fitz.Matrix(2.0, 2.0)  # Увеличиваем разрешение
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            
-            output_file = output_path / f"{pdf_path.stem}_page_{page_num+1}.{target_format}"
-            pix.save(output_file)
+            print(f"Конвертирую {filename} в PDF...")
+            convert_docx_to_pdf(docx_path, pdf_path)
+    
+    # Затем обрабатываем все PDF и Excel файлы
+    for filename in os.listdir(input_folder):
+        file_path = os.path.join(input_folder, filename)
         
-        doc.close()
-    except Exception as e:
-        raise Exception(f"Ошибка конвертации PDF: {str(e)}")
+        # Пропускаем подпапки
+        if os.path.isdir(file_path):
+            continue
+            
+        name_without_ext = os.path.splitext(filename)[0]
+        output_path = os.path.join(output_folder, name_without_ext + '.png')
+        
+        if filename.lower().endswith('.pdf'):
+            print(f"Обрабатываю PDF: {filename}...")
+            convert_pdf_to_image(file_path, output_path)
+            
+        elif filename.lower().endswith(('.xlsx', '.xls')):
+            print(f"Обрабатываю Excel: {filename}...")
+            convert_excel_to_image(file_path, output_path)
 
 if __name__ == "__main__":
-    input_folder = "/путь/к/исходной/папке"
-    output_folder = "/путь/к/папке/для/изображений"
+    input_folder = "путь_к_вашей_папке_с_файлами"
+    output_folder = "путь_к_папке_для_сохранения_изображений"
     
-    convert_to_images(input_folder, output_folder)
+    process_files(input_folder, output_folder)
+    print("Обработка завершена!")
