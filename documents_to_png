@@ -3,16 +3,47 @@ import sys
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
+import time
+
+def check_dependencies():
+    """Проверяет наличие необходимых утилит"""
+    dependencies = ['pdftoppm', 'libreoffice']
+    missing = []
+    
+    for dep in dependencies:
+        try:
+            if sys.platform == 'win32':
+                subprocess.run([dep, '--version'], capture_output=True, check=True)
+            else:
+                subprocess.run(['which', dep], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            missing.append(dep)
+    
+    if missing:
+        print(f"Ошибка: Не найдены необходимые утилиты: {', '.join(missing)}")
+        print("Установите их:")
+        if sys.platform == 'win32':
+            print("- Poppler для Windows: https://github.com/oschwartz10612/poppler-windows/releases/")
+            print("- LibreOffice: https://www.libreoffice.org/")
+        else:
+            print("- Ubuntu/Debian: sudo apt-get install poppler-utils libreoffice")
+            print("- Fedora/CentOS: sudo dnf install poppler-utils libreoffice")
+        return False
+    return True
 
 def convert_to_images(input_folder, output_folder, target_format='png'):
     """
     Конвертирует PDF, DOCX и Excel файлы в изображения
     """
+    if not check_dependencies():
+        return
+    
     # Создаем выходную папку если не существует
     os.makedirs(output_folder, exist_ok=True)
     
     # Поддерживаемые форматы
-    supported_formats = ['.pdf', '.docx', '.xlsx', '.xls']
+    supported_formats = ['.pdf', '.docx', '.xlsx', '.xls', '.doc']
     
     # Проходим по всем файлам
     for file_path in Path(input_folder).rglob('*'):
@@ -24,24 +55,24 @@ def convert_to_images(input_folder, output_folder, target_format='png'):
                 try:
                     # Конвертируем в изображения
                     if file_path.suffix.lower() == '.pdf':
-                        # Для PDF используем pdftoppm (часть poppler-utils)
+                        # Для PDF используем pdftoppm
                         cmd = [
                             'pdftoppm', 
                             '-png', 
                             str(file_path),
                             os.path.join(temp_dir, 'page')
                         ]
-                        subprocess.run(cmd, check=True)
+                        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                     else:
                         # Для DOCX и Excel используем LibreOffice
                         cmd = [
                             'libreoffice', 
                             '--headless', 
-                            '--convert-to', 'pdf', 
+                            '--convert-to', 'pdf:writer_pdf_Export', 
                             '--outdir', temp_dir, 
                             str(file_path)
                         ]
-                        subprocess.run(cmd, check=True)
+                        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                         
                         # Затем конвертируем PDF в изображения
                         pdf_path = os.path.join(temp_dir, f"{file_path.stem}.pdf")
@@ -52,23 +83,47 @@ def convert_to_images(input_folder, output_folder, target_format='png'):
                                 pdf_path,
                                 os.path.join(temp_dir, 'page')
                             ]
-                            subprocess.run(cmd, check=True)
+                            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                        else:
+                            print(f"  Ошибка: Не удалось создать PDF из {file_path.name}")
+                            continue
                     
-                    # Переносим сконвертированные изображения в целевую папку
+                    # Ждем завершения процесса и проверяем результат
+                    if result.returncode != 0:
+                        print(f"  Ошибка конвертации: {result.stderr}")
+                        continue
+                    
+                    # Копируем сконвертированные изображения в целевую папку
+                    converted_files = []
                     for img_file in Path(temp_dir).glob('*.png'):
                         # Создаем имя файла с оригинальным именем + номер страницы
                         new_name = f"{file_path.stem}_{img_file.stem}.png"
                         output_path = os.path.join(output_folder, new_name)
-                        img_file.rename(output_path)
-                        print(f"Создано: {new_name}")
+                        
+                        # Копируем файл
+                        shutil.copy2(str(img_file), output_path)
+                        converted_files.append(new_name)
+                    
+                    if converted_files:
+                        print(f"  Создано файлов: {len(converted_files)}")
+                    else:
+                        print(f"  Предупреждение: Не создано ни одного изображения для {file_path.name}")
                         
                 except subprocess.CalledProcessError as e:
-                    print(f"Ошибка при конвертации {file_path.name}: {e}")
+                    print(f"  Ошибка при конвертации {file_path.name}: {e.stderr if e.stderr else e}")
                 except Exception as e:
-                    print(f"Неожиданная ошибка с {file_path.name}: {e}")
+                    print(f"  Неожиданная ошибка с {file_path.name}: {e}")
 
 # Использование
 if __name__ == "__main__":
-    input_folder = "/путь/к/исходной/папке"
-    output_folder = "/путь/к/папке/для/изображений"
+    # Указываем пути
+    input_folder = "/путь/к/исходной/папке"  # Папка с исходными документами
+    output_folder = "/путь/к/папке/для/изображений"  # Папка для сохранения изображений
+    
+    # Проверяем существование входной папки
+    if not os.path.exists(input_folder):
+        print(f"Ошибка: Папка {input_folder} не существует!")
+        sys.exit(1)
+    
+    # Запускаем конвертацию
     convert_to_images(input_folder, output_folder)
