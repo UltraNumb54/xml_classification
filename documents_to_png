@@ -1,0 +1,74 @@
+import os
+import sys
+from pathlib import Path
+import subprocess
+import tempfile
+
+def convert_to_images(input_folder, output_folder, target_format='png'):
+    """
+    Конвертирует PDF, DOCX и Excel файлы в изображения
+    """
+    # Создаем выходную папку если не существует
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Поддерживаемые форматы
+    supported_formats = ['.pdf', '.docx', '.xlsx', '.xls']
+    
+    # Проходим по всем файлам
+    for file_path in Path(input_folder).rglob('*'):
+        if file_path.suffix.lower() in supported_formats:
+            print(f"Обработка: {file_path.name}")
+            
+            # Создаем временную папку для выходных изображений
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    # Конвертируем в изображения
+                    if file_path.suffix.lower() == '.pdf':
+                        # Для PDF используем pdftoppm (часть poppler-utils)
+                        cmd = [
+                            'pdftoppm', 
+                            '-png', 
+                            str(file_path),
+                            os.path.join(temp_dir, 'page')
+                        ]
+                        subprocess.run(cmd, check=True)
+                    else:
+                        # Для DOCX и Excel используем LibreOffice
+                        cmd = [
+                            'libreoffice', 
+                            '--headless', 
+                            '--convert-to', 'pdf', 
+                            '--outdir', temp_dir, 
+                            str(file_path)
+                        ]
+                        subprocess.run(cmd, check=True)
+                        
+                        # Затем конвертируем PDF в изображения
+                        pdf_path = os.path.join(temp_dir, f"{file_path.stem}.pdf")
+                        if os.path.exists(pdf_path):
+                            cmd = [
+                                'pdftoppm', 
+                                '-png', 
+                                pdf_path,
+                                os.path.join(temp_dir, 'page')
+                            ]
+                            subprocess.run(cmd, check=True)
+                    
+                    # Переносим сконвертированные изображения в целевую папку
+                    for img_file in Path(temp_dir).glob('*.png'):
+                        # Создаем имя файла с оригинальным именем + номер страницы
+                        new_name = f"{file_path.stem}_{img_file.stem}.png"
+                        output_path = os.path.join(output_folder, new_name)
+                        img_file.rename(output_path)
+                        print(f"Создано: {new_name}")
+                        
+                except subprocess.CalledProcessError as e:
+                    print(f"Ошибка при конвертации {file_path.name}: {e}")
+                except Exception as e:
+                    print(f"Неожиданная ошибка с {file_path.name}: {e}")
+
+# Использование
+if __name__ == "__main__":
+    input_folder = "/путь/к/исходной/папке"
+    output_folder = "/путь/к/папке/для/изображений"
+    convert_to_images(input_folder, output_folder)
