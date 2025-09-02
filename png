@@ -1,0 +1,132 @@
+import os
+from pathlib import Path
+import tempfile
+import sys
+
+# Для обработки PDF
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
+# Для обработки Office-документов
+try:
+    from docx import Document
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+except ImportError:
+    Document = None
+    openpyxl = None
+
+# Для создания изображений
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+
+def check_dependencies():
+    """Проверяет наличие необходимых библиотек"""
+    dependencies = []
+    if fitz is None:
+        dependencies.append('PyMuPDF')
+    if Document is None:
+        dependencies.append('python-docx')
+    if openpyxl is None:
+        dependencies.append('openpyxl')
+    if Image is None:
+        dependencies.append('Pillow')
+    if dependencies:
+        print("Отсутствуют зависимости:", ", ".join(dependencies))
+        sys.exit(1)
+
+def pdf_to_images(pdf_path, output_path, target_format='png', page_limit=1):
+    """Конвертирует PDF в изображения используя PyMuPDF"""
+    doc = fitz.open(pdf_path)
+    for i in range(min(len(doc), page_limit)):
+        page = doc.load_page(i)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # Увеличиваем разрешение
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        img.save(output_path / f"page_{i+1}.{target_format}")
+    doc.close()
+
+def docx_to_images(docx_path, output_path, target_format='png', paragraph_limit=20):
+    """Конвертирует DOCX в изображения"""
+    doc = Document(docx_path)
+    text = "\n".join([p.text for p in doc.paragraphs[:paragraph_limit]])
+    
+    # Создаем изображение с текстом
+    font = ImageFont.load_default()
+    margin = 40
+    line_height = 20
+    lines = text.split('\n')
+    img_width = 800
+    img_height = margin * 2 + line_height * len(lines)
+    
+    img = Image.new('RGB', (img_width, img_height), 'white')
+    draw = ImageDraw.Draw(img)
+    y = margin
+    for line in lines:
+        draw.text((margin, y), line, font=font, fill='black')
+        y += line_height
+    img.save(output_path / f"page_1.{target_format}")
+
+def excel_to_images(excel_path, output_path, target_format='png', row_limit=20):
+    """Конвертирует Excel в изображения"""
+    wb = openpyxl.load_workbook(excel_path)
+    ws = wb.active
+    
+    # Определяем диапазон данных
+    max_row = min(ws.max_row, row_limit)
+    data = []
+    for row in ws.iter_rows(min_row=1, max_row=max_row, values_only=True):
+        data.append(row)
+    
+    # Создаем изображение таблицы
+    cell_width = 100
+    cell_height = 30
+    img_width = cell_width * len(data[0]) if data else 800
+    img_height = cell_height * len(data)
+    
+    img = Image.new('RGB', (img_width, img_height), 'white')
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default()
+
+    for y, row in enumerate(data):
+        for x, value in enumerate(row):
+            x0 = x * cell_width
+            y0 = y * cell_height
+            draw.rectangle([x0, y0, x0+cell_width, y0+cell_height], outline='black')
+            draw.text((x0+5, y0+5), str(value if value else ""), font=font, fill='black')
+    
+    img.save(output_path / f"page_1.{target_format}")
+
+def convert_to_images(input_folder, output_folder, target_format='png'):
+    """Конвертирует PDF, DOCX и Excel файлы в изображения"""
+    input_path = Path(input_folder)
+    output_path = Path(output_folder)
+    
+    # Создаем папки для каждого формата
+    pdf_dir = output_path / "PDF"
+    doc_dir = output_path / "DOC"
+    excel_dir = output_path / "EXCEL"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    excel_dir.mkdir(parents=True, exist_ok=True)
+
+    # Обрабатываем PDF файлы
+    for pdf_file in input_path.glob("*.pdf"):
+        pdf_to_images(pdf_file, pdf_dir, target_format)
+
+    # Обрабатываем DOCX файлы
+    for docx_file in input_path.glob("*.docx"):
+        docx_to_images(docx_file, doc_dir, target_format)
+
+    # Обрабатываем Excel файлы
+    for excel_file in input_path.glob("*.xlsx"):
+        excel_to_images(excel_file, excel_dir, target_format)
+
+if __name__ == "__main__":
+    check_dependencies()
+    input_folder = "/путь/к/исходной/папке"  # Укажите ваш путь
+    output_folder = "/путь/к/папке/для/изображений"  # Укажите ваш путь
+    convert_to_images(input_folder, output_folder)
