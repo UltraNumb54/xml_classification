@@ -1,0 +1,415 @@
+import pandas as pd
+import ast
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import torch
+import torchvision
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from torchvision.models.detection import fasterrcnn_resnet50_fpn
+from torchvision.ops import box_convert
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+import cv2
+import os
+from sklearn.model_selection import train_test_split
+import warnings
+warnings.filterwarnings('ignore')
+
+# 1. Загрузка и анализ данных
+def load_and_validate_data(csv_path):
+    """Загрузка и проверка CSV файла с разметкой"""
+    df = pd.read_csv(csv_path)
+    
+    # Проверка обязательных колонок
+    required_columns = ['image_path', 'annotations']
+    for col in required_columns:
+        if col not in df.columns:
+            raise ValueError(f"Отсутствует обязательная колонка: {col}")
+    
+    print(f"Загружено {len(df)} записей")
+    print(f"Колонки в датасете: {list(df.columns)}")
+    
+    # Преобразование аннотаций из строки в Python объект
+    try:
+        df['annotations'] = df['annotations'].apply(ast.literal_eval)
+        print("Аннотации успешно преобразованы")
+    except:
+        raise ValueError("Ошибка при преобразовании аннотаций. Убедитесь в правильном формате.")
+    
+    return df
+
+# 2. Извлечение bounding box и меток
+def extract_annotations(df):
+    """Извлечение bounding box и меток из аннотаций Label Studio"""
+    all_labels = set()
+    
+    def process_annotation(ann):
+        nonlocal all_labels
+        bboxes = []
+        
+        # Обработка разных форматов аннотаций Label Studio
+        if isinstance(ann, list):
+            # Формат: [{"result": [...]}]
+            for item in ann:
+                if 'result' in item:
+                    for res in item['result']:
+                        bbox_data = extract_bbox_data(res)
+                        if bbox_data:
+                            bboxes.append(bbox_data)
+                            all_labels.add(bbox_data[-1])  # Добавляем метку
+        elif isinstance(ann, dict) and 'result' in ann:
+            # Формат: {"result": [...]}
+            for res in ann['result']:
+                bbox_data = extract_bbox_data(res)
+                if bbox_data:
+                    bboxes.append(bbox_data)
+                    all_labels.add(bbox_data[-1])
+        
+        return bboxes
+    
+    def extract_bbox_data(res):
+        """Извлечение данных bounding box из элемента результата"""
+        if ('value' in res and 
+            'x' in res['value'] and 
+            'y' in res['value'] and 
+            'width' in res['value'] and 
+            'height' in res['value'] and 
+            'rectanglelabels' in res['value'] and 
+            len(res['value']['rectanglelabels']) > 0):
+            
+            # Получаем размеры исходного изображения
+            original_width = res['original_width'] if 'original_width' in res else 1920  # значение по умолчанию
+            original_height = res['original_height'] if 'original_height' in res else 1080  # значение по умолчанию
+            
+            # Конвертируем проценты в пиксели
+            x = res['value']['x'] * original_width / 100
+            y = res['value']['y'] * original_height / 100
+            width = res['value']['width'] * original_width / 100
+            height = res['value']['height'] * original_height / 100
+            label = res['value']['rectanglelabels'][0]
+            
+            return (x, y, width, height, label)
+        return None
+    
+    df['bboxes'] = df['annotations'].apply(process_annotation)
+    
+    # Создаем mapping меток к числовым идентификаторам
+    label_mapping = {label: idx+1 for idx, label in enumerate(sorted(all_labels))}
+    print(f"Найдены классы: {label_mapping}")
+    
+    # Добавляем числовые метки
+    def add_numeric_labels(bboxes):
+        numeric_bboxes = []
+        for (x, y, w, h, label) in bboxes:
+            numeric_bboxes.append((x, y, w, h, label_mapping[label]))
+        return numeric_bboxes
+    
+    df['bboxes_numeric'] = df['bboxes'].apply(add_numeric_labels)
+    
+    return df, label_mapping
+
+# 3. Визуализация разметки
+def visualize_annotations(df, label_mapping, num_samples=3):
+    """Визуализация аннотаций для проверки корректности"""
+    inverse_mapping = {v: k for k, v in label_mapping.items()}
+    
+    for i in range(min(num_samples, len(df))):
+        row = df.iloc[i]
+        img_path = row['image_path']
+        
+        # Проверяем существование файла
+        if not os.path.exists(img_path):
+            print(f"Предупреждение: файл {img_path} не существует")
+            continue
+            
+        img = Image.open(img_path)
+        fig, ax = plt.subplots(1, figsize=(12, 8))
+        ax.imshow(img)
+        
+        for (x, y, w, h, label_id) in row['bboxes_numeric']:
+            rect = patches.Rectangle((x, y), w, h, linewidth=2, 
+                                   edgecolor='r', facecolor='none')
+            ax.add_patch(rect)
+            ax.text(x, y, f"{inverse_mapping[label_id]}", 
+                   color='white', fontsize=12, 
+                   bbox=dict(facecolor='red', alpha=0.7))
+        
+        plt.title(f"Image: {os.path.basename(img_path)}")
+        plt.show()
+
+# 4. Создание датасета с аугментациями
+class ScreenshotDataset(Dataset):
+    def __init__(self, df, transform=None, resize=None):
+        self.df = df.reset_index(drop=True)
+        self.transform = transform
+        self.resize = resize
+        
+    def __len__(self):
+        return len(self.df)
+    
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        img_path = row['image_path']
+        
+        # Загрузка изображения
+        image = cv2.imread(img_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Извлечение bounding boxes
+        bboxes = row['bboxes_numeric']
+        boxes = []
+        labels = []
+        
+        for (x, y, w, h, label_id) in bboxes:
+            # Конвертируем в формат [x_min, y_min, x_max, y_max]
+            boxes.append([x, y, x+w, y+h])
+            labels.append(label_id)
+        
+        boxes = np.array(boxes, dtype=np.float32) if boxes else np.zeros((0, 4), dtype=np.float32)
+        labels = np.array(labels, dtype=np.int64) if labels else np.zeros((0,), dtype=np.int64)
+        
+        # Применение аугментаций
+        if self.transform:
+            transformed = self.transform(image=image, bboxes=boxes, class_labels=labels)
+            image = transformed['image']
+            boxes = np.array(transformed['bboxes'], dtype=np.float32) if transformed['bboxes'] else np.zeros((0, 4), dtype=np.float32)
+            labels = np.array(transformed['class_labels'], dtype=np.int64) if transformed['class_labels'] else np.zeros((0,), dtype=np.int64)
+        
+        # Конвертация в тензоры
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
+        
+        target = {}
+        target['boxes'] = boxes
+        target['labels'] = labels
+        target['image_id'] = torch.tensor([idx])
+        
+        # Вычисление площади bounding box (требуется для модели)
+        if len(boxes) > 0:
+            area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
+            target['area'] = area
+        
+        # Assume all instances are not crowd
+        iscrowd = torch.zeros((len(boxes),), dtype=torch.int64)
+        target['iscrowd'] = iscrowd
+        
+        return image, target
+
+# 5. Создание аугментаций
+def get_transform(train=True):
+    """Создание трансформаций для обучения и валидации"""
+    if train:
+        return A.Compose([
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.1),
+            A.RandomBrightnessContrast(p=0.3),
+            A.Blur(blur_limit=3, p=0.1),
+            A.Resize(height=800, width=800, always_apply=True),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2()
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
+    else:
+        return A.Compose([
+            A.Resize(height=800, width=800, always_apply=True),
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2()
+        ], bbox_params=A.BboxParams(format='pascal_voc', label_fields=['class_labels']))
+
+# 6. Функция для коллации данных
+def collate_fn(batch):
+    return tuple(zip(*batch))
+
+# 7. Обучение модели
+def train_model(df, label_mapping, num_epochs=10, batch_size=2):
+    """Обучение модели детекции"""
+    # Разделение на train/validation
+    train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
+    print(f"Обучающая выборка: {len(train_df)} записей")
+    print(f"Валидационная выборка: {len(val_df)} записей")
+    
+    # Создание датасетов и даталоадеров
+    train_dataset = ScreenshotDataset(train_df, transform=get_transform(train=True))
+    val_dataset = ScreenshotDataset(val_df, transform=get_transform(train=False))
+    
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, 
+        num_workers=2, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=1, shuffle=False, 
+        num_workers=2, collate_fn=collate_fn
+    )
+    
+    # Инициализация модели
+    num_classes = len(label_mapping) + 1  # +1 для фонового класса
+    model = fasterrcnn_resnet50_fpn(pretrained=True)
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, num_classes)
+    
+    # Оптимизатор и learning rate scheduler
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+    
+    device = torch.device('cpu')  # Используем CPU
+    model.to(device)
+    
+    # Цикл обучения
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        
+        for batch_idx, (images, targets) in enumerate(train_loader):
+            images = list(image.to(device) for image in images)
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            
+            loss_dict = model(images, targets)
+            losses = sum(loss for loss in loss_dict.values())
+            
+            optimizer.zero_grad()
+            losses.backward()
+            optimizer.step()
+            
+            total_loss += losses.item()
+            
+            if batch_idx % 10 == 0:
+                print(f'Epoch: {epoch}, Batch: {batch_idx}, Loss: {losses.item():.4f}')
+        
+        # Step the learning rate scheduler
+        lr_scheduler.step()
+        
+        # Валидация
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for images, targets in val_loader:
+                images = list(image.to(device) for image in images)
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                
+                loss_dict = model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
+                val_loss += losses.item()
+        
+        avg_train_loss = total_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        print(f'Epoch {epoch} completed. Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+    
+    return model, label_mapping
+
+# 8. Функция предсказания
+def predict(image_path, model, label_mapping, confidence_threshold=0.7):
+    """Предсказание на новом изображении"""
+    device = torch.device('cpu')
+    model.eval()
+    
+    # Загрузка и преобразование изображения
+    image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    transform = get_transform(train=False)
+    transformed = transform(image=image, bboxes=[], class_labels=[])
+    image_tensor = transformed['image'].unsqueeze(0).to(device)
+    
+    # Предсказание
+    with torch.no_grad():
+        prediction = model(image_tensor)
+    
+    # Обработка результатов
+    pred_boxes = prediction[0]['boxes'].cpu().numpy()
+    pred_labels = prediction[0]['labels'].cpu().numpy()
+    pred_scores = prediction[0]['scores'].cpu().numpy()
+    
+    # Фильтрация по уверенности
+    keep = pred_scores >= confidence_threshold
+    pred_boxes = pred_boxes[keep]
+    pred_labels = pred_labels[keep]
+    pred_scores = pred_scores[keep]
+    
+    # Обратное преобразование меток
+    inverse_mapping = {v: k for k, v in label_mapping.items()}
+    
+    # Визуализация результатов
+    image = Image.open(image_path).convert('RGB')
+    draw = ImageDraw.Draw(image)
+    
+    # Попробуем загрузить шрифт, если нет - используем стандартный
+    try:
+        font = ImageFont.truetype("arial.ttf", 20)
+    except:
+        font = ImageFont.load_default()
+    
+    for box, label, score in zip(pred_boxes, pred_labels, pred_scores):
+        x_min, y_min, x_max, y_max = box
+        label_name = inverse_mapping.get(label, f"Class {label}")
+        
+        # Рисуем bounding box
+        draw.rectangle([x_min, y_min, x_max, y_max], outline='red', width=3)
+        
+        # Рисуем текст с фоном
+        text = f"{label_name}: {score:.2f}"
+        text_bbox = draw.textbbox((x_min, y_min), text, font=font)
+        draw.rectangle(text_bbox, fill='red')
+        draw.text((x_min, y_min), text, fill='white', font=font)
+    
+    # Сохранение результата
+    output_path = 'prediction_result.jpg'
+    image.save(output_path)
+    
+    # Вывод информации о обнаруженных объектах
+    print("Обнаруженные объекты:")
+    for label, score in zip(pred_labels, pred_scores):
+        label_name = inverse_mapping.get(label, f"Class {label}")
+        print(f"- {label_name} с уверенностью {score:.2f}")
+    
+    return image, output_path
+
+# Основной код
+if __name__ == "__main__":
+    # Параметры
+    CSV_PATH = "your_annotations.csv"  # Замените на путь к вашему CSV файлу
+    NUM_EPOCHS = 10
+    BATCH_SIZE = 2  # Уменьшите если не хватает памяти
+    
+    # 1. Загрузка и проверка данных
+    print("Загрузка данных...")
+    df = load_and_validate_data(CSV_PATH)
+    
+    # 2. Извлечение аннотаций
+    print("Извлечение аннотаций...")
+    df, label_mapping = extract_annotations(df)
+    
+    # 3. Визуализация для проверки
+    print("Визуализация примеров...")
+    visualize_annotations(df, label_mapping, num_samples=2)
+    
+    # 4. Обучение модели
+    print("Обучение модели...")
+    model, label_mapping = train_model(df, label_mapping, num_epochs=NUM_EPOCHS, batch_size=BATCH_SIZE)
+    
+    # 5. Сохранение модели
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'label_mapping': label_mapping
+    }, 'screenshot_detection_model.pth')
+    print("Модель сохранена как 'screenshot_detection_model.pth'")
+    
+    # 6. Пример предсказания
+    print("Тестирование предсказания...")
+    test_image_path = "your_test_image.jpg"  # Замените на путь к тестовому изображению
+    if os.path.exists(test_image_path):
+        result_image, output_path = predict(test_image_path, model, label_mapping)
+        result_image.show()
+        print(f"Результат сохранен как {output_path}")
+    else:
+        print("Тестовое изображение не найдено, пропускаем предсказание")
+
+# Загрузка модели
+checkpoint = torch.load('screenshot_detection_model.pth', map_location='cpu')
+model.load_state_dict(checkpoint['model_state_dict'])
+label_mapping = checkpoint['label_mapping']
+
+# Предсказание на новом изображении
+result_image, output_path = predict('new_screenshot.jpg', model, label_mapping)
