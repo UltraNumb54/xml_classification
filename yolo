@@ -1,0 +1,92 @@
+import os
+import yaml
+from ultralytics import YOLO
+from sklearn.model_selection import train_test_split
+
+# 1. Подготовка структуры данных
+dataset_path = "ваш/путь/к/датасету"  # Укажите полный путь к папке с данными
+images_dir = os.path.join(dataset_path, "images")
+labels_dir = os.path.join(dataset_path, "labels")
+
+# Прочитаем классы из файла
+with open(os.path.join(dataset_path, "classes.txt"), "r") as f:
+    classes = [line.strip() for line in f.readlines()]
+
+# 2. Создание data.yaml
+data = {
+    'path': dataset_path,
+    'train': 'train.txt',
+    'val': 'val.txt',
+    'names': {i: name for i, name in enumerate(classes)}
+}
+
+with open(os.path.join(dataset_path, 'data.yaml'), 'w') as f:
+    yaml.dump(data, f)
+
+# 3. Разделение на train/val
+all_images = [os.path.join(images_dir, f) for f in os.listdir(images_dir) if f.endswith(('.jpg', '.png'))]
+train_files, val_files = train_test_split(all_images, test_size=0.2, random_state=42)
+
+# Создание файлов с путями
+with open(os.path.join(dataset_path, 'train.txt'), 'w') as f:
+    f.write('\n'.join(train_files))
+
+with open(os.path.join(dataset_path, 'val.txt'), 'w') as f:
+    f.write('\n'.join(val_files))
+
+# 4. Инициализация модели
+model = YOLO('yolov8n-obb.yaml')  # Создаем новую модель OBB
+# Или используйте предобученную: model = YOLO('yolov8n-obb.pt')
+
+# 5. Обучение с аугментацией
+results = model.train(
+    data=os.path.join(dataset_path, 'data.yaml'),
+    epochs=100,
+    imgsz=640,
+    batch=16,  # Уменьшите если не хватает памяти
+    augment=True,
+    degrees=10.0,
+    translate=0.1,
+    scale=0.5,
+    shear=2.0,
+    perspective=0.0005,
+    flipud=0.5,
+    fliplr=0.5,
+    mosaic=1.0,
+    mixup=0.1,
+    cache=True,  # Кэширование изображений в RAM
+    device='cpu',  # Используем CPU
+    workers=4,  # Количество процессов загрузки данных
+    project='yolo_obb_train',
+    name='exp1'
+)
+
+# 6. Использование обученной модели для предсказания
+trained_model = YOLO(os.path.join('yolo_obb_train', 'exp1', 'weights', 'best.pt'))
+
+results = trained_model.predict(
+    source='ваше/изображение.jpg',  # Путь к тестовому изображению
+    conf=0.5,
+    device='cpu'
+)
+
+# Визуализация результатов
+for result in results:
+    print("Обнаруженные объекты:")
+    for box in result.obb:
+        cls_id = int(box.cls)
+        confidence = box.conf.item()
+        class_name = classes[cls_id]
+        print(f"- {class_name} (уверенность: {confidence:.2f})")
+    
+    # Сохранение результата
+    result.save('результат.jpg')
+
+# Вывод информации о датасете
+print(f"\nИнформация о датасете:")
+print(f"Всего изображений: {len(all_images)}")
+print(f"Обучающая выборка: {len(train_files)}")
+print(f"Валидационная выборка: {len(val_files)}")
+print(f"Классы: {classes}")
+
+pip install ultralytics scikit-learn pyyaml
