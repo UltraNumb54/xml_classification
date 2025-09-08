@@ -1,0 +1,93 @@
+import os
+import yaml
+from ultralytics import YOLO
+import cv2
+import numpy as np
+
+# 1. Проверка существования файла модели
+model_path = os.path.join('yolo_obb_train', 'exp1', 'weights', 'best.pt')
+if not os.path.exists(model_path):
+    raise FileNotFoundError(f"Модель не найдена по пути: {model_path}")
+
+# 2. Загрузка обученной модели
+try:
+    # Пробуем загрузить модель с разными параметрами
+    trained_model = YOLO(model_path)
+    print("Модель успешно загружена")
+except Exception as e:
+    print(f"Ошибка при загрузке модели: {e}")
+    # Попробуем альтернативный способ загрузки
+    try:
+        trained_model = YOLO(model_path, task='detect')
+        print("Модель загружена с указанием задачи")
+    except Exception as e2:
+        print(f"Вторая попытка загрузки также не удалась: {e2}")
+        exit(1)
+
+# 3. Загрузка классов
+dataset_path = "ваш/путь/к/датасету"  # Замените на ваш путь
+classes_path = os.path.join(dataset_path, "classes.txt")
+if os.path.exists(classes_path):
+    with open(classes_path, "r") as f:
+        classes = [line.strip() for line in f.readlines()]
+else:
+    # Если файл классов не найден, создадим пустой список
+    classes = []
+    print("Файл классов не найден, будут использоваться числовые идентификаторы")
+
+# 4. Предсказание на новом изображении
+image_path = 'ваше/изображение.jpg'  # Замените на путь к вашему изображению
+
+if not os.path.exists(image_path):
+    raise FileNotFoundError(f"Изображение не найдено по пути: {image_path}")
+
+# Выполняем предсказание
+try:
+    results = trained_model(
+        source=image_path,
+        conf=0.5,
+        device='cpu',
+        verbose=False  # Отключаем подробный вывод
+    )
+    
+    # 5. Обработка и вывод результатов
+    for i, result in enumerate(results):
+        print(f"Результаты для изображения {i+1}:")
+        
+        # Проверяем, есть ли обнаруженные объекты
+        if hasattr(result, 'obb') and result.obb is not None and len(result.obb) > 0:
+            print("Обнаруженные объекты:")
+            for j, box in enumerate(result.obb):
+                cls_id = int(box.cls)
+                confidence = box.conf.item()
+                
+                # Получаем имя класса
+                if classes and cls_id < len(classes):
+                    class_name = classes[cls_id]
+                else:
+                    class_name = f"Class {cls_id}"
+                
+                print(f"- {class_name} (уверенность: {confidence:.2f})")
+                
+                # Получаем координаты bounding box (OBB формат)
+                if hasattr(box, 'xyxyxyxy'):
+                    coords = box.xyxyxyxy.numpy()
+                    print(f"  Координаты: {coords}")
+        else:
+            print("Объекты не обнаружены.")
+        
+        # Визуализируем результат
+        result_img = result.plot()  # Создаем изображение с bounding boxes
+        
+        # Сохраняем результат
+        output_path = f'результат_{i}.jpg'
+        cv2.imwrite(output_path, result_img)
+        print(f"Результат сохранен как: {output_path}")
+        
+        # Показываем результат (опционально)
+        cv2.imshow('Результат', result_img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        
+except Exception as e:
+    print(f"Ошибка при выполнении предсказания: {e}")
