@@ -1,0 +1,166 @@
+import os
+import cv2
+import numpy as np
+from ultralytics import YOLO
+import matplotlib.pyplot as plt
+
+# Загрузка модели
+model_path = os.path.join('yolo_obb_train', 'exp1', 'weights', 'last.pt')
+model = YOLO(model_path)
+
+# Загрузка классов
+dataset_path = "ваш/путь/к/датасету"  # Замените на ваш путь
+classes_path = os.path.join(dataset_path, "classes.txt")
+if os.path.exists(classes_path):
+    with open(classes_path, "r") as f:
+        classes = [line.strip() for line in f.readlines()]
+else:
+    classes = []
+    print("Файл классов не найден")
+
+# Путь к тестовому изображению
+image_path = 'ваше/изображение.jpg'  # Замените на путь к вашему изображению
+
+# Загрузка изображения
+image = cv2.imread(image_path)
+if image is None:
+    print(f"Не удалось загрузить изображение: {image_path}")
+    exit(1)
+
+# 1. Проверка обучения модели - посмотрим на метрики
+print("Проверка метрик обучения...")
+try:
+    metrics = model.val(device='cpu')
+    print(f"mAP50: {metrics.box.map50:.3f}")
+    print(f"mAP50-95: {metrics.box.map:.3f}")
+except Exception as e:
+    print(f"Не удалось получить метрики: {e}")
+
+# 2. Постепенное уменьшение порога уверенности
+conf_thresholds = [0.7, 0.5, 0.3, 0.1]  # Пробуем разные пороги
+
+for conf_thresh in conf_thresholds:
+    print(f"\nТестирование с порогом уверенности: {conf_thresh}")
+    
+    # Выполняем предсказание
+    results = model.predict(
+        source=image,
+        conf=conf_thresh,
+        device='cpu',
+        verbose=False
+    )
+    
+    # Обработка результатов
+    result = results[0]
+    
+    # Проверяем, есть ли обнаруженные объекты
+    if hasattr(result, 'obb') and result.obb is not None and len(result.obb) > 0:
+        print(f"Найдено объектов с порогом {conf_thresh}: {len(result.obb)}")
+        
+        # Визуализируем результат
+        result_img = result.plot()
+        
+        # Показываем изображение с обнаруженными объектами
+        cv2.imshow(f'Результат (conf={conf_thresh})', result_img)
+        cv2.waitKey(2000)  # Показываем 2 секунды
+        
+        # Сохраняем результат
+        output_path = f'результат_conf_{conf_thresh}.jpg'
+        cv2.imwrite(output_path, result_img)
+        print(f"Результат сохранен как: {output_path}")
+        
+        # Выводим информацию об обнаруженных объектах
+        for j, box in enumerate(result.obb):
+            cls_id = int(box.cls)
+            confidence = box.conf.item()
+            class_name = classes[cls_id] if cls_id < len(classes) else f"Class {cls_id}"
+            
+            print(f"- {class_name} (уверенность: {confidence:.3f})")
+            
+            # Для OBB получаем координаты полигона
+            if hasattr(box, 'xyxyxyxy'):
+                coords = box.xyxyxyxy.numpy().reshape(-1, 2)
+                print(f"  Координаты углов: {coords}")
+    else:
+        print(f"С порогом {conf_thresh} объекты не обнаружены")
+
+# 3. Если объекты все еще не найдены, попробуем увеличить изображение
+print("\nПопытка с увеличенным изображением...")
+height, width = image.shape[:2]
+scale_factor = 1.5  # Увеличиваем изображение в 1.5 раза
+
+# Создаем увеличенную версию изображения
+scaled_image = cv2.resize(image, (int(width * scale_factor), int(height * scale_factor)))
+
+# Выполняем предсказание на увеличенном изображении
+results = model.predict(
+    source=scaled_image,
+    conf=0.3,  # Используем более низкий порог
+    device='cpu',
+    verbose=False
+)
+
+# Обработка результатов
+result = results[0]
+if hasattr(result, 'obb') and result.obb is not None and len(result.obb) > 0:
+    print(f"На увеличенном изображении найдено объектов: {len(result.obb)}")
+    
+    # Визуализируем результат
+    result_img = result.plot()
+    cv2.imshow('Результат на увеличенном изображении', result_img)
+    cv2.waitKey(0)  # Ждем нажатия клавиши
+    cv2.destroyAllWindows()
+    
+    # Сохраняем результат
+    output_path = 'результат_увеличенное.jpg'
+    cv2.imwrite(output_path, result_img)
+    print(f"Результат сохранен как: {output_path}")
+else:
+    print("На увеличенном изображении объекты также не обнаружены")
+
+# 4. Проверка качества обучения на обучающих данных
+print("\nПроверка на изображении из обучающей выборки...")
+# Получим путь к первому изображению из обучающей выборки
+train_files_path = os.path.join(dataset_path, 'train.txt')
+if os.path.exists(train_files_path):
+    with open(train_files_path, 'r') as f:
+        train_files = f.readlines()
+    
+    if train_files:
+        # Берем первое изображение из обучающей выборки
+        train_image_path = train_files[0].strip()
+        if os.path.exists(train_image_path):
+            train_image = cv2.imread(train_image_path)
+            
+            # Выполняем предсказание
+            results = model.predict(
+                source=train_image,
+                conf=0.3,
+                device='cpu',
+                verbose=False
+            )
+            
+            # Обработка результатов
+            result = results[0]
+            if hasattr(result, 'obb') and result.obb is not None and len(result.obb) > 0:
+                print(f"На обучающем изображении найдено объектов: {len(result.obb)}")
+                
+                # Визуализируем результат
+                result_img = result.plot()
+                cv2.imshow('Результат на обучающем изображении', result_img)
+                cv2.waitKey(0)
+                
+                # Сохраняем результат
+                output_path = 'результат_обучающее.jpg'
+                cv2.imwrite(output_path, result_img)
+                print(f"Результат сохранен как: {output_path}")
+            else:
+                print("На обучающем изображении объекты не обнаружены - возможно, модель не обучилась правильно")
+        else:
+            print("Не удалось найти обучающее изображение")
+    else:
+        print("Файл train.txt пуст")
+else:
+    print("Файл train.txt не найден")
+
+cv2.destroyAllWindows()
