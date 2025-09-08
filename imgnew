@@ -1,0 +1,143 @@
+import os
+import yaml
+import numpy as np
+from ultralytics import YOLO
+from sklearn.model_selection import train_test_split
+import time
+import gc
+import psutil
+
+# Функция для проверки температуры и использования памяти
+def check_system_health():
+    """Проверяет состояние системы перед продолжением обучения"""
+    try:
+        # Проверяем использование памяти
+        memory = psutil.virtual_memory()
+        memory_percent = memory.percent
+        print(f"Использование памяти: {memory_percent}%")
+        
+        if memory_percent > 85:
+            print("Предупреждение: высокое использование памяти!")
+            return False
+            
+        # Проверяем использование CPU
+        cpu_percent = psutil.cpu_percent(interval=1)
+        print(f"Использование CPU: {cpu_percent}%")
+        
+        if cpu_percent > 90:
+            print("Предупреждение: высокое использование CPU!")
+            time.sleep(10)  # Делаем паузу перед следующей проверкой
+            return False
+            
+        return True
+        
+    except Exception as e:
+        print(f"Ошибка при проверке состояния системы: {e}")
+        return True
+
+# 1. Подготовка структуры данных
+dataset_path = "ваш/путь/к/датасету"
+images_dir = os.path.join(dataset_path, "images")
+labels_dir = os.path.join(dataset_path, "labels")
+
+# Прочитаем классы из файла
+with open(os.path.join(dataset_path, "classes.txt"), "r") as f:
+    classes = [line.strip() for line in f.readlines()]
+
+# 2. Анализ датасета
+print("Анализ датасета:")
+all_images = [f for f in os.listdir(images_dir) if f.endswith(('.jpg', '.png', '.jpeg'))]
+print(f"Всего изображений: {len(all_images)}")
+
+# 3. Создание data.yaml
+data = {
+    'path': dataset_path,
+    'train': 'train.txt',
+    'val': 'val.txt',
+    'names': {i: name for i, name in enumerate(classes)}
+}
+
+with open(os.path.join(dataset_path, 'data.yaml'), 'w') as f:
+    yaml.dump(data, f)
+
+# 4. Разделение на train/val
+image_paths = [os.path.join(images_dir, f) for f in all_images]
+train_files, val_files = train_test_split(image_paths, test_size=0.2, random_state=42)
+
+# Создание файлов с путями
+with open(os.path.join(dataset_path, 'train.txt'), 'w') as f:
+    f.write('\n'.join(train_files))
+
+with open(os.path.join(dataset_path, 'val.txt'), 'w') as f:
+    f.write('\n'.join(val_files))
+
+# Очистка памяти
+del image_paths, train_files, val_files
+gc.collect()
+
+# 5. Инициализация модели
+model = YOLO('yolov8n-obb.yaml')
+
+# 6. Обучение с повышенной стабильностью
+try:
+    # Обучение небольшими порциями с проверкой состояния системы
+    for start_epoch in range(0, 20, 5):  # Обучаем блоками по 5 эпох
+        end_epoch = start_epoch + 5
+        
+        # Проверяем состояние системы перед началом блока
+        if not check_system_health():
+            print("Состояние системы нестабильно, делаем паузу...")
+            time.sleep(60)  # Пауза 1 минута
+            
+        print(f"Запуск обучения с эпохи {start_epoch} до {end_epoch}")
+        
+        results = model.train(
+            data=os.path.join(dataset_path, 'data.yaml'),
+            epochs=end_epoch,
+            imgsz=320,  # Уменьшенный размер изображения
+            batch=1,    # Минимальный batch size
+            augment=False,  # Полностью отключаем аугментацию
+            cache=False,
+            device='cpu',
+            workers=0,  # Без многопроцессорности
+            project='yolo_obb_train',
+            name='exp_safe',
+            patience=10,
+            save_period=5,
+            val=True,
+            plots=True,
+            verbose=True,
+            resume=True if start_epoch > 0 else False  # Продолжаем с последней точки
+        )
+        
+        print(f"Обучение с {start_epoch} до {end_epoch} завершено. Делаем паузу...")
+        time.sleep(120)  # Пауза 2 минуты между блоками
+        
+except Exception as e:
+    print(f"Ошибка во время обучения: {e}")
+    print("Попытка сохранить текущий прогресс...")
+    
+    # Пытаемся загрузить последнюю модель
+    try:
+        last_model_path = os.path.join('yolo_obb_train', 'exp_safe', 'weights', 'last.pt')
+        if os.path.exists(last_model_path):
+            model = YOLO(last_model_path)
+            print("Последняя модель успешно загружена")
+    except Exception as load_error:
+        print(f"Не удалось загрузить последнюю модель: {load_error}")
+
+# 7. Оценка модели (только если обучение завершилось успешно)
+try:
+    # Загрузка лучшей модели
+    best_model_path = os.path.join('yolo_obb_train', 'exp_safe', 'weights', 'best.pt')
+    if os.path.exists(best_model_path):
+        trained_model = YOLO(best_model_path)
+        
+        # Тестирование на валидационном наборе
+        metrics = trained_model.val()
+        print(f"mAP50: {metrics.box.map50}")
+        print(f"mAP50-95: {metrics.box.map}")
+    else:
+        print("Файл лучшей модели не найден")
+except Exception as e:
+    print(f"Ошибка при оценке модели: {e}")
