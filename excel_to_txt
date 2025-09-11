@@ -3,33 +3,56 @@ import re
 from pathlib import Path
 import pandas as pd
 
+# Константы
+INPUT_FOLDER = "excel_files"  # Папка с исходными Excel файлами
+OUTPUT_FOLDER = "text_results"  # Папка для сохранения результатов
+SHEET_NUMBER = 0  # Номер листа для обработки (0 = первый лист)
+MAX_CHARS = 10000  # Максимальное количество извлекаемых символов
+
 def extract_text_from_excel(file_path):
-    """Извлекает текст из всех листов Excel файла"""
+    """Извлекает текст из указанного листа Excel файла с ограничением по символам"""
     text_parts = []
+    char_count = 0
     
     try:
-        # Читаем все листы Excel файла
-        sheets = pd.read_excel(file_path, sheet_name=None, dtype=str, header=None)
+        # Читаем только указанный лист Excel файла
+        df = pd.read_excel(file_path, sheet_name=SHEET_NUMBER, dtype=str, header=None)
         
-        for sheet_name, df in sheets.items():
-            # Преобразуем все ячейки в строки и объединяем
-            for row in df.values:
-                for cell in row:
-                    if pd.notna(cell):
-                        cell_text = str(cell).strip()
-                        # Оставляем только буквы и пробелы
-                        clean_text = re.sub(r'[^a-zA-Zа-яА-ЯёЁ\s]', '', cell_text)
-                        if clean_text:
+        # Преобразуем все ячейки в строки и объединяем
+        for row in df.values:
+            for cell in row:
+                if pd.notna(cell) and char_count < MAX_CHARS:
+                    cell_text = str(cell).strip()
+                    # Оставляем только буквы и пробелы
+                    clean_text = re.sub(r'[^a-zA-Zа-яА-ЯёЁ\s]', '', cell_text)
+                    
+                    if clean_text:
+                        # Проверяем, не превысим ли лимит символов
+                        if char_count + len(clean_text) + 1 > MAX_CHARS:  # +1 для пробела
+                            # Добавляем только часть текста, которая помещается
+                            remaining_chars = MAX_CHARS - char_count
+                            if remaining_chars > 0:
+                                text_parts.append(clean_text[:remaining_chars])
+                                char_count += remaining_chars
+                            break
+                        else:
                             text_parts.append(clean_text)
+                            char_count += len(clean_text) + 1  # +1 для пробела
+                
+                if char_count >= MAX_CHARS:
+                    break
+            if char_count >= MAX_CHARS:
+                break
+                
     except Exception as e:
         print(f"Ошибка при обработке файла {file_path}: {str(e)}")
     
     return ' '.join(text_parts)
 
-def process_excel_files(input_folder, output_folder):
+def process_excel_files():
     """Обрабатывает все Excel файлы в указанной папке"""
-    input_path = Path(input_folder)
-    output_path = Path(output_folder)
+    input_path = Path(INPUT_FOLDER)
+    output_path = Path(OUTPUT_FOLDER)
     
     # Создаем выходную папку если не существует
     output_path.mkdir(parents=True, exist_ok=True)
@@ -55,13 +78,10 @@ def process_excel_files(input_folder, output_folder):
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(f"excel\n{text_content}")
             
-            print(f"Создан файл: {output_file.name}")
+            print(f"Создан файл: {output_file.name} (символов: {len(text_content)})")
         else:
             print(f"Не удалось извлечь текст из файла: {excel_file.name}")
 
 if __name__ == "__main__":
-    input_folder = input("Введите путь к папке с Excel файлами: ").strip()
-    output_folder = input("Введите путь к папке для сохранения результатов: ").strip()
-    
-    process_excel_files(input_folder, output_folder)
+    process_excel_files()
     print("Обработка завершена!")
