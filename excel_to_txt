@@ -1,0 +1,67 @@
+import os
+import re
+from pathlib import Path
+import pandas as pd
+
+def extract_text_from_excel(file_path):
+    """Извлекает текст из всех листов Excel файла"""
+    text_parts = []
+    
+    try:
+        # Читаем все листы Excel файла
+        sheets = pd.read_excel(file_path, sheet_name=None, dtype=str, header=None)
+        
+        for sheet_name, df in sheets.items():
+            # Преобразуем все ячейки в строки и объединяем
+            for row in df.values:
+                for cell in row:
+                    if pd.notna(cell):
+                        cell_text = str(cell).strip()
+                        # Оставляем только буквы и пробелы
+                        clean_text = re.sub(r'[^a-zA-Zа-яА-ЯёЁ\s]', '', cell_text)
+                        if clean_text:
+                            text_parts.append(clean_text)
+    except Exception as e:
+        print(f"Ошибка при обработке файла {file_path}: {str(e)}")
+    
+    return ' '.join(text_parts)
+
+def process_excel_files(input_folder, output_folder):
+    """Обрабатывает все Excel файлы в указанной папке"""
+    input_path = Path(input_folder)
+    output_path = Path(output_folder)
+    
+    # Создаем выходную папку если не существует
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Ищем все Excel файлы
+    excel_files = list(input_path.glob('*.xlsx')) + list(input_path.glob('*.xls'))
+    
+    if not excel_files:
+        print("Не найдено Excel файлов в указанной папке")
+        return
+    
+    for excel_file in excel_files:
+        print(f"Обработка файла: {excel_file.name}")
+        
+        # Извлекаем текст
+        text_content = extract_text_from_excel(excel_file)
+        
+        if text_content:
+            # Создаем имя выходного файла
+            output_file = output_path / f"{excel_file.stem}.txt"
+            
+            # Записываем результат
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(f"excel\n{text_content}")
+            
+            print(f"Создан файл: {output_file.name}")
+        else:
+            print(f"Не удалось извлечь текст из файла: {excel_file.name}")
+
+if __name__ == "__main__":
+    input_folder = input("Введите путь к папке с Excel файлами: ").strip()
+    output_folder = input("Введите путь к папке для сохранения результатов: ").strip()
+    
+    process_excel_files(input_folder, output_folder)
+    print("Обработка завершена!")
