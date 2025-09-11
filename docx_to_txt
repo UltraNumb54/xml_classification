@@ -3,18 +3,42 @@ import zipfile
 from docx import Document
 from PIL import Image
 import io
+import re
 
 # Константы
 INPUT_FOLDER = "путь/к/папке/с/docx"  # Укажите путь к исходной папке
 OUTPUT_FOLDER = "путь/к/выходной/папке"  # Укажите путь для результатов
+MAX_CHARS = 2000  # Ограничение символов (примерно одна страница)
+
+def clean_text(text):
+    """Очистка текста от цифр и символов, оставляя только буквы и пробелы"""
+    # Оставляем только буквы, пробелы и основные знаки препинания
+    cleaned_text = re.sub(r'[^a-zA-Zа-яА-ЯёЁ\s\.\,\!\?\:\;\-\(\)]', '', text)
+    # Убираем лишние пробелы
+    cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+    return cleaned_text.strip()
 
 def extract_text_from_docx(docx_path):
-    """Извлечение текста из DOCX файла"""
+    """Извлечение текста из DOCX файла с ограничением по длине"""
     doc = Document(docx_path)
     text = []
+    char_count = 0
+    
     for paragraph in doc.paragraphs:
         if paragraph.text.strip():
-            text.append(paragraph.text)
+            cleaned_para = clean_text(paragraph.text)
+            if cleaned_para:
+                # Проверяем, не превысим ли лимит при добавлении этого абзаца
+                if char_count + len(cleaned_para) + 1 > MAX_CHARS:
+                    # Добавляем только часть, которая влезает в лимит
+                    remaining_chars = MAX_CHARS - char_count
+                    if remaining_chars > 0:
+                        text.append(cleaned_para[:remaining_chars])
+                    break
+                else:
+                    text.append(cleaned_para)
+                    char_count += len(cleaned_para) + 1  # +1 для символа новой строки
+    
     return '\n'.join(text)
 
 def extract_images_from_docx(docx_path, output_path_base):
@@ -28,14 +52,19 @@ def extract_images_from_docx(docx_path, output_path_base):
         for i, image_file in enumerate(image_files, 1):
             image_data = docx_zip.read(image_file)
             img = Image.open(io.BytesIO(image_data))
-            img_format = img.format
-            output_path = f"{output_path_base}_{i}.{img_format.lower()}"
+            img_format = img.format.lower() if img.format else 'png'
+            output_path = f"{output_path_base}_{i}.{img_format}"
             img.save(output_path)
 
 def process_docx_files():
+    if not os.path.exists(INPUT_FOLDER):
+        print(f"Исходная папка не найдена: {INPUT_FOLDER}")
+        return
+    
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 
+    processed_count = 0
     for filename in os.listdir(INPUT_FOLDER):
         if filename.endswith('.docx'):
             docx_path = os.path.join(INPUT_FOLDER, filename)
@@ -50,9 +79,15 @@ def process_docx_files():
                 with open(f"{output_base}.txt", 'w', encoding='utf-8') as f:
                     f.write("word\n")
                     f.write(text)
+                print(f"Обработан файл: {filename} (текст)")
+                processed_count += 1
             else:
                 # Извлечение изображений
                 extract_images_from_docx(docx_path, output_base)
+                print(f"Обработан файл: {filename} (изображения)")
+                processed_count += 1
+    
+    print(f"Обработано файлов: {processed_count}")
 
 if __name__ == "__main__":
     process_docx_files()
