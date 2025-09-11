@@ -46,7 +46,7 @@ def extract_text_from_docx(docx_path):
         return ""
 
 def extract_images_from_docx(docx_path, output_path_base):
-    """Извлечение изображений из DOCX файла с обработкой ошибок"""
+    """Извлечение изображений из DOCX файла и конвертация в PNG"""
     try:
         with zipfile.ZipFile(docx_path) as docx_zip:
             image_files = []
@@ -59,20 +59,16 @@ def extract_images_from_docx(docx_path, output_path_base):
                 try:
                     image_data = docx_zip.read(image_file)
                     
-                    # Проверяем, что это действительно изображение
-                    if not image_data or len(image_data) < 100:  # Минимальный размер файла
+                    # Пропускаем слишком маленькие файлы (вероятно, не изображения)
+                    if len(image_data) < 100:
                         continue
                         
-                    # Пытаемся определить формат изображения
+                    # Открываем изображение с помощью Pillow
                     img = Image.open(io.BytesIO(image_data))
-                    img_format = img.format.lower() if img.format else 'png'
                     
-                    # Проверяем поддерживаемые форматы
-                    if img_format not in ['png', 'jpeg', 'jpg', 'gif', 'bmp', 'tiff']:
-                        img_format = 'png'  # Используем PNG по умолчанию
-                    
-                    output_path = f"{output_path_base}_{i}.{img_format}"
-                    img.save(output_path)
+                    # Конвертируем в PNG независимо от исходного формата
+                    output_path = f"{output_path_base}_{i}.png"
+                    img.save(output_path, 'PNG')
                     extracted_count += 1
                     print(f"Извлечено изображение: {output_path}")
                     
