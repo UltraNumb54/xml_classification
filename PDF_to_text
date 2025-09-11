@@ -1,41 +1,54 @@
-import os
 import fitz  # PyMuPDF
-from docx import Document
+import pytesseract
+from PIL import Image
+import os
+import io
 
-def pdf_to_text_first_page(pdf_path):
+# Укажите путь к tesseract если он не добавлен в PATH
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+def pdf_to_text(input_folder, output_folder):
+    # Создаем папку для результатов если её нет
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Проходим по всем файлам в папке
+    for filename in os.listdir(input_folder):
+        if filename.lower().endswith('.pdf'):
+            pdf_path = os.path.join(input_folder, filename)
+            text = extract_text_from_pdf(pdf_path)
+            
+            # Сохраняем результат в txt файл
+            output_filename = os.path.splitext(filename)[0] + '.txt'
+            output_path = os.path.join(output_folder, output_filename)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(text)
+            print(f"Обработан: {filename}")
+
+def extract_text_from_pdf(pdf_path):
     doc = fitz.open(pdf_path)
     page = doc.load_page(0)  # Первая страница
-    text = page.get_text()
+    
+    # Получаем изображение страницы с повышенным DPI
+    mat = fitz.Matrix(300/72, 300/72)  # 300 DPI
+    pix = page.get_pixmap(matrix=mat)
+    img_data = pix.tobytes('ppm')
+    
+    # Конвертируем в изображение для OCR
+    image = Image.open(io.BytesIO(img_data))
+    
+    # Применяем OCR с указанием языков
+    text = pytesseract.image_to_string(
+        image,
+        lang='rus+eng',  # Русский и английский
+        config='--psm 3 --oem 3'
+    )
+    
     doc.close()
     return text
 
-def docx_to_text_first_page(docx_path):
-    doc = Document(docx_path)
-    text = []
-    for paragraph in doc.paragraphs:
-        if paragraph.text.strip():
-            text.append(paragraph.text)
-        # Ограничение на примерный объем первой страницы
-        if len('\n'.join(text)) > 1500:  # Эмпирическое значение
-            break
-    return '\n'.join(text)
-
-def process_folder(folder_path):
-    results = {}
-    for file in os.listdir(folder_path):
-        if file.endswith(".pdf"):
-            text = pdf_to_text_first_page(os.path.join(folder_path, file))
-            results[file] = text
-        elif file.endswith(".docx"):
-            text = docx_to_text_first_page(os.path.join(folder_path, file))
-            results[file] = text
-    return results
-
-# Использование
-folder_path = "your_folder_path"
-text_data = process_folder(folder_path)
-
-# Сохранение в TXT
-for filename, text in text_data.items():
-    with open(f"{filename}.txt", "w", encoding="utf-8") as f:
-        f.write(text)
+if __name__ == "__main__":
+    input_folder = "путь/к/папке/с/pdf"
+    output_folder = "путь/к/папке/результатов"
+    pdf_to_text(input_folder, output_folder)
