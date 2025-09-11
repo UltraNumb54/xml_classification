@@ -20,41 +20,70 @@ def clean_text(text):
 
 def extract_text_from_docx(docx_path):
     """Извлечение текста из DOCX файла с ограничением по длине"""
-    doc = Document(docx_path)
-    text = []
-    char_count = 0
-    
-    for paragraph in doc.paragraphs:
-        if paragraph.text.strip():
-            cleaned_para = clean_text(paragraph.text)
-            if cleaned_para:
-                # Проверяем, не превысим ли лимит при добавлении этого абзаца
-                if char_count + len(cleaned_para) + 1 > MAX_CHARS:
-                    # Добавляем только часть, которая влезает в лимит
-                    remaining_chars = MAX_CHARS - char_count
-                    if remaining_chars > 0:
-                        text.append(cleaned_para[:remaining_chars])
-                    break
-                else:
-                    text.append(cleaned_para)
-                    char_count += len(cleaned_para) + 1  # +1 для символа новой строки
-    
-    return '\n'.join(text)
+    try:
+        doc = Document(docx_path)
+        text = []
+        char_count = 0
+        
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                cleaned_para = clean_text(paragraph.text)
+                if cleaned_para:
+                    # Проверяем, не превысим ли лимит при добавлении этого абзаца
+                    if char_count + len(cleaned_para) + 1 > MAX_CHARS:
+                        # Добавляем только часть, которая влезает в лимит
+                        remaining_chars = MAX_CHARS - char_count
+                        if remaining_chars > 0:
+                            text.append(cleaned_para[:remaining_chars])
+                        break
+                    else:
+                        text.append(cleaned_para)
+                        char_count += len(cleaned_para) + 1  # +1 для символа новой строки
+        
+        return '\n'.join(text)
+    except Exception as e:
+        print(f"Ошибка при извлечении текста из {docx_path}: {e}")
+        return ""
 
 def extract_images_from_docx(docx_path, output_path_base):
-    """Извлечение изображений из DOCX файла"""
-    with zipfile.ZipFile(docx_path) as docx_zip:
-        image_files = []
-        for file_info in docx_zip.infolist():
-            if file_info.filename.startswith('word/media/'):
-                image_files.append(file_info)
-        
-        for i, image_file in enumerate(image_files, 1):
-            image_data = docx_zip.read(image_file)
-            img = Image.open(io.BytesIO(image_data))
-            img_format = img.format.lower() if img.format else 'png'
-            output_path = f"{output_path_base}_{i}.{img_format}"
-            img.save(output_path)
+    """Извлечение изображений из DOCX файла с обработкой ошибок"""
+    try:
+        with zipfile.ZipFile(docx_path) as docx_zip:
+            image_files = []
+            for file_info in docx_zip.infolist():
+                if file_info.filename.startswith('word/media/'):
+                    image_files.append(file_info)
+            
+            extracted_count = 0
+            for i, image_file in enumerate(image_files, 1):
+                try:
+                    image_data = docx_zip.read(image_file)
+                    
+                    # Проверяем, что это действительно изображение
+                    if not image_data or len(image_data) < 100:  # Минимальный размер файла
+                        continue
+                        
+                    # Пытаемся определить формат изображения
+                    img = Image.open(io.BytesIO(image_data))
+                    img_format = img.format.lower() if img.format else 'png'
+                    
+                    # Проверяем поддерживаемые форматы
+                    if img_format not in ['png', 'jpeg', 'jpg', 'gif', 'bmp', 'tiff']:
+                        img_format = 'png'  # Используем PNG по умолчанию
+                    
+                    output_path = f"{output_path_base}_{i}.{img_format}"
+                    img.save(output_path)
+                    extracted_count += 1
+                    print(f"Извлечено изображение: {output_path}")
+                    
+                except Exception as e:
+                    print(f"Ошибка при обработке изображения {image_file.filename}: {e}")
+                    continue
+            
+            return extracted_count > 0
+    except Exception as e:
+        print(f"Ошибка при открытии DOCX как ZIP: {e}")
+        return False
 
 def process_docx_files():
     if not os.path.exists(INPUT_FOLDER):
@@ -71,21 +100,29 @@ def process_docx_files():
             base_name = os.path.splitext(filename)[0]
             output_base = os.path.join(OUTPUT_FOLDER, base_name)
 
+            print(f"Обработка файла: {filename}")
+            
             # Извлечение текста
             text = extract_text_from_docx(docx_path)
             
             if text.strip():
                 # Сохранение текста
-                with open(f"{output_base}.txt", 'w', encoding='utf-8') as f:
-                    f.write("word\n")
-                    f.write(text)
-                print(f"Обработан файл: {filename} (текст)")
-                processed_count += 1
+                try:
+                    with open(f"{output_base}.txt", 'w', encoding='utf-8') as f:
+                        f.write("word\n")
+                        f.write(text)
+                    print(f"Сохранен текст: {base_name}.txt")
+                    processed_count += 1
+                except Exception as e:
+                    print(f"Ошибка при сохранении текста: {e}")
             else:
                 # Извлечение изображений
-                extract_images_from_docx(docx_path, output_base)
-                print(f"Обработан файл: {filename} (изображения)")
-                processed_count += 1
+                success = extract_images_from_docx(docx_path, output_base)
+                if success:
+                    print(f"Извлечены изображения из: {filename}")
+                    processed_count += 1
+                else:
+                    print(f"Не удалось извлечь ни текст, ни изображения из: {filename}")
     
     print(f"Обработано файлов: {processed_count}")
 
