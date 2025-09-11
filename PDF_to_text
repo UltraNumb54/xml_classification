@@ -1,22 +1,23 @@
 import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image
+import easyocr
 import os
 import io
-
-# Укажите путь к tesseract если он не добавлен в PATH
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+from PIL import Image
+import numpy as np
 
 def pdf_to_text(input_folder, output_folder):
     # Создаем папку для результатов если её нет
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
+    # Инициализируем EasyOCR для русского и английского языков
+    reader = easyocr.Reader(['ru', 'en'])
+
     # Проходим по всем файлам в папке
     for filename in os.listdir(input_folder):
         if filename.lower().endswith('.pdf'):
             pdf_path = os.path.join(input_folder, filename)
-            text = extract_text_from_pdf(pdf_path)
+            text = extract_text_from_pdf(pdf_path, reader)
             
             # Сохраняем результат в txt файл
             output_filename = os.path.splitext(filename)[0] + '.txt'
@@ -26,26 +27,26 @@ def pdf_to_text(input_folder, output_folder):
                 f.write(text)
             print(f"Обработан: {filename}")
 
-def extract_text_from_pdf(pdf_path):
+def extract_text_from_pdf(pdf_path, reader):
     doc = fitz.open(pdf_path)
     page = doc.load_page(0)  # Первая страница
     
     # Получаем изображение страницы с повышенным DPI
     mat = fitz.Matrix(300/72, 300/72)  # 300 DPI
     pix = page.get_pixmap(matrix=mat)
-    img_data = pix.tobytes('ppm')
     
-    # Конвертируем в изображение для OCR
+    # Конвертируем изображение в формат, понятный для EasyOCR
+    img_data = pix.tobytes('png')
     image = Image.open(io.BytesIO(img_data))
+    image_np = np.array(image)
     
-    # Применяем OCR с указанием языков
-    text = pytesseract.image_to_string(
-        image,
-        lang='rus+eng',  # Русский и английский
-        config='--psm 3 --oem 3'
-    )
+    # Применяем OCR
+    results = reader.readtext(image_np, detail=0, paragraph=True)
     
     doc.close()
+    
+    # Объединяем все строки в один текст
+    text = '\n'.join(results)
     return text
 
 if __name__ == "__main__":
