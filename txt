@@ -1,0 +1,64 @@
+import os
+from lxml import etree
+from pathlib import Path
+
+# Константы для настройки
+INPUT_XML_FILE = "dataset.xml"  # Путь к входному XML файлу
+OUTPUT_FOLDER = "output_files"  # Папка для сохранения результатов
+MAX_FILES_TO_CREATE = 1000      # Максимальное количество создаваемых файлов
+
+def process_xml_file():
+    """
+    Основная функция для обработки XML файла и создания текстовых файлов
+    """
+    # Проверяем существование входного файла
+    if not os.path.exists(INPUT_XML_FILE):
+        print(f"Ошибка: Файл {INPUT_XML_FILE} не найден!")
+        return
+    
+    # Создаем папку для выходных файлов, если она не существует
+    output_path = Path(OUTPUT_FOLDER)
+    output_path.mkdir(exist_ok=True)
+    
+    try:
+        # Парсим XML файл
+        tree = etree.parse(INPUT_XML_FILE)
+        root = tree.getroot()
+        
+        # Находим все элементы description
+        descriptions = root.xpath('//description')
+        
+        file_count = 0
+        
+        for i, description in enumerate(descriptions):
+            # Проверяем лимит файлов
+            if file_count >= MAX_FILES_TO_CREATE:
+                print(f"Достигнут лимит в {MAX_FILES_TO_CREATE} файлов. Остановка обработки.")
+                break
+            
+            # Получаем текст из description
+            description_text = description.text
+            
+            if description_text and description_text.strip():
+                # Создаем имя файла
+                filename = f"description_{i+1:04d}.txt"
+                filepath = output_path / filename
+                
+                # Сохраняем в файл
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(description_text.strip())
+                
+                file_count += 1
+                
+                if file_count % 100 == 0:
+                    print(f"Обработано {file_count} файлов...")
+        
+        print(f"Готово! Создано {file_count} файлов в папке '{OUTPUT_FOLDER}'")
+        
+    except etree.XMLSyntaxError as e:
+        print(f"Ошибка синтаксиса XML: {e}")
+    except Exception as e:
+        print(f"Произошла ошибка: {e}")
+
+if __name__ == "__main__":
+    process_xml_file()
