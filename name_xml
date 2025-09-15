@@ -1,0 +1,193 @@
+import os
+import re
+from lxml import etree
+from pathlib import Path
+
+# Константы для настройки
+INPUT_XML_FILE = "dataset.xml"  # Путь к входному XML файлу
+OUTPUT_FOLDER = "output_files"  # Папка для сохранения результатов
+MAX_FILES_TO_CREATE = 1000      # Максимальное количество создаваемых файлов
+
+def fix_xml_file(file_path):
+    """
+    Функция для предварительной очистки XML файла от возможных проблем
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Убираем непечатаемые символы
+        content = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', content)
+        
+        # Заменяем проблемные символы в тексте
+        content = content.replace('&', '&amp;')
+        content = content.replace('<', '&lt;')
+        content = content.replace('>', '&gt;')
+        content = content.replace('"', '&quot;')
+        content = content.replace("'", '&apos;')
+        
+        # Временный файл для очищенного содержимого
+        temp_file = file_path + '.cleaned.xml'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        return temp_file
+        
+    except Exception as e:
+        print(f"Ошибка при очистке файла: {e}")
+        return file_path
+
+def process_xml_file():
+    """
+    Основная функция для обработки XML файла и создания текстовых файлов
+    """
+    # Проверяем существование входного файла
+    if not os.path.exists(INPUT_XML_FILE):
+        print(f"Ошибка: Файл {INPUT_XML_FILE} не найден!")
+        return
+    
+    # Создаем папку для выходных файлов, если она не существует
+    output_path = Path(OUTPUT_FOLDER)
+    output_path.mkdir(exist_ok=True)
+    
+    # Пытаемся сначала прочитать оригинальный файл
+    original_file = INPUT_XML_FILE
+    use_cleaned = False
+    
+    try:
+        # Пробуем прочитать оригинальный файл
+        tree = etree.parse(original_file)
+        print("Успешно прочитан оригинальный файл")
+        
+    except etree.XMLSyntaxError as e:
+        print(f"Ошибка синтаксиса в оригинальном файле: {e}")
+        print("Пытаюсь очистить файл...")
+        
+        # Пробуем очистить файл
+        cleaned_file = fix_xml_file(original_file)
+        use_cleaned = True
+        original_file = cleaned_file
+        
+        try:
+            tree = etree.parse(cleaned_file)
+            print("Успешно прочитан очищенный файл")
+        except etree.XMLSyntaxError as e2:
+            print(f"Ошибка синтаксиса после очистки: {e2}")
+            print("Пытаюсь использовать восстановительный парсер...")
+            
+            # Используем восстановительный парсер
+            parser = etree.XMLParser(recover=True)
+            with open(cleaned_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            root = etree.fromstring(content, parser)
+            tree = etree.ElementTree(root)
+            print("Успешно использован восстановительный парсер")
+    
+    try:
+        if 'tree' not in locals():
+            # Если tree еще не создан, создаем его с восстановительным парсером
+            parser = etree.XMLParser(recover=True)
+            with open(original_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            root = etree.fromstring(content, parser)
+            tree = etree.ElementTree(root)
+        
+        root = tree.getroot()
+        
+        # Находим все элементы description (разные возможные варианты)
+        descriptions = []
+        
+        # Пробуем разные XPath выражения
+        xpath_expressions = [
+            '//description',
+            './/description',
+            '//DESCRIPTION',
+            './/DESCRIPTION',
+            '//*[local-name()="description"]'
+        ]
+        
+        for xpath in xpath_expressions:
+            found = root.xpath(xpath)
+            if found:
+                descriptions.extend(found)
+                print(f"Найдено {len(found)} элементов с XPath: {xpath}")
+                break
+        
+        if not descriptions:
+            print("Не найдено ни одного элемента description. Проверьте структуру XML.")
+            return
+        
+        file_count = 0
+        
+        for i, description in enumerate(descriptions):
+            # Проверяем лимит файлов
+            if file_count >= MAX_FILES_TO_CREATE:
+                print(f"Достигнут лимит в {MAX_FILES_TO_CREATE} файлов. Остановка обработки.")
+                break
+            
+            # Получаем текст из description
+            description_text = ''
+            if description.text:
+                description_text = description.text.strip()
+            else:
+                # Пробуем получить текст из всех дочерних элементов
+                description_text = ''.join(description.itertext()).strip()
+            
+            if description_text:
+                # Создаем имя файла
+                filename = f"description_{i+1:04d}.txt"
+                filepath = output_path / filename
+                
+                # Сохраняем в файл
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(description_text)
+                
+                file_count += 1
+                
+                if file_count % 100 == 0:
+                    print(f"Обработано {file_count} файлов...")
+        
+        print(f"Готово! Создано {file_count} файлов в папке '{OUTPUT_FOLDER}'")
+        
+        # Удаляем временный очищенный файл, если он использовался
+        if use_cleaned and os.path.exists(original_file) and original_file.endswith('.cleaned.xml'):
+            os.remove(original_file)
+            
+    except Exception as e:
+        print(f"Произошла ошибка при обработке: {e}")
+        import traceback
+        traceback.print_exc()
+
+def debug_xml_structure():
+    """
+    Функция для отладки структуры XML файла
+    """
+    try:
+        with open(INPUT_XML_FILE, 'r', encoding='utf-8') as f:
+            first_lines = ''.join([next(f) for _ in range(10)])
+        print("Первые 10 строк файла:")
+        print(first_lines)
+        
+        # Пробуем прочитать и показать структуру
+        parser = etree.XMLParser(recover=True)
+        with open(INPUT_XML_FILE, 'r', encoding='utf-8') as f:
+            content = f.read()
+        root = etree.fromstring(content, parser)
+        
+        print("\nКорневой элемент:", root.tag)
+        print("Дочерние элементы:")
+        for child in root[:5]:  # Показываем первые 5 дочерних элементов
+            print(f"  - {child.tag}")
+            for subchild in child[:3]:  # Показываем первые 3 внучатых элемента
+                print(f"    * {subchild.tag}")
+        
+    except Exception as e:
+        print(f"Ошибка при отладке: {e}")
+
+if __name__ == "__main__":
+    print("Запуск обработки XML файла...")
+    
+    # Если нужна отладка структуры файла
+    # debug_xml_structure()
+    
+    process_xml_file()
