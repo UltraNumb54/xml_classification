@@ -1,0 +1,116 @@
+pip install spacy regex
+python -m spacy download ru_core_news_sm
+
+train...
+
+import json
+import spacy
+from spacy.training import Example
+import re
+
+# Конфигурация
+LABEL_STUDIO_FILE = "label_studio_export.json"
+MODEL_DIR = "ner_model"
+TEXT_FILE = "target_file.txt"  # Файл для анализа
+
+# Регулярные выражения для извлечения сущностей
+PATTERNS = [
+    {"label": "EMAIL", "pattern": [{"TEXT": {"regex": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"}}]},
+    {"label": "FIO", "pattern": [{"TEXT": {"regex": r"[А-Я][а-я]+\s[А-Я][а-я]+\s[А-Я][а-я]+"}}]},
+    {"label": "POSITION", "pattern": [{"TEXT": {"regex": r"[А-Я][а-я]+\s[А-Я][а-я]+"}}]}
+]
+
+def load_label_studio_data(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    training_data = []
+    for item in data:
+        text = item['data']['text']
+        entities = []
+        for annotation in item['annotations']:
+            for result in annotation['result']:
+                start = result['value']['start']
+                end = result['value']['end']
+                label = result['value']['labels'][0]
+                entities.append((start, end, label.upper()))
+        training_data.append((text, {"entities": entities}))
+    
+    return training_data
+
+def train_model(training_data):
+    nlp = spacy.blank("ru")
+    
+    if "ner" not in nlp.pipe_names:
+        ner = nlp.add_pipe("ner")
+    else:
+        ner = nlp.get_pipe("ner")
+    
+    for _, annotations in training_data:
+        for ent in annotations.get("entities"):
+            ner.add_label(ent[2])
+    
+    # Добавляем правила в NER
+    ruler = nlp.add_pipe("entity_ruler")
+    ruler.add_patterns(PATTERNS)
+    
+    # Начинаем обучение
+    nlp.begin_training()
+    for itn in range(20):
+        losses = {}
+        for text, annotations in training_data:
+            doc = nlp.make_doc(text)
+            example = Example.from_dict(doc, annotations)
+            nlp.update([example], losses=losses)
+        print(f"Iteration {itn}, Losses: {losses}")
+    
+    nlp.to_disk(MODEL_DIR)
+    return nlp
+
+if __name__ == "__main__":
+    training_data = load_label_studio_data(LABEL_STUDIO_FILE)
+    nlp = train_model(training_data)
+    
+    # Тестирование на целевом файле
+    with open(TEXT_FILE, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    doc = nlp(text)
+    results = []
+    for ent in doc.ents:
+        if ent.label_ in ["FIO", "EMAIL", "POSITION"]:
+            results.append({
+                "text": ent.text,
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char
+            })
+    
+    print(json.dumps(results, ensure_ascii=False, indent=2))
+
+test...
+
+import spacy
+import json
+
+def analyze_text(text, nlp):
+    doc = nlp(text)
+    results = []
+    for ent in doc.ents:
+        if ent.label_ in ["FIO", "EMAIL", "POSITION"]:
+            results.append({
+                "text": ent.text,
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char
+            })
+    return results
+
+if __name__ == "__main__":
+    nlp = spacy.load("ner_model")
+    
+    # Тестовый текст
+    test_text = "Иванов Иван Иванович, email: test@mail.ru, должность: старший инженер"
+    results = analyze_text(test_text, nlp)
+    
+    print(json.dumps(results, ensure_ascii=False, indent=2))
