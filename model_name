@@ -1,0 +1,142 @@
+scikit-learn==1.2.2
+crfsuite==0.9.8
+nltk==3.8.1
+python-levenshtein==0.21.1
+joblib==1.2.0
+
+import os
+
+# Пути к файлам
+LABEL_STUDIO_JSON = "label_studio_export.json"
+MODEL_PATH = "ner_model.crfsuite"
+TEST_FILE = "test_text.txt"
+
+# Параметры модели
+FIELDS_TO_EXTRACT = ['fio', 'email', 'position']  # location исключен по условию
+
+import re
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk import pos_tag
+import crfsuite
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.model_selection import train_test_split
+import joblib
+
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger_ru')
+
+class EntityExtractor:
+    def __init__(self):
+        self.model = crfsuite.Tagger()
+        self.vectorizer = DictVectorizer()
+        self.feature_map = []
+
+    def extract_features(self, tokens):
+        features = []
+        for i, token in enumerate(tokens):
+            feat = {
+                'word': token,
+                'pos': pos_tag([token])[0][1],
+                'is_capitalized': token[0].isupper(),
+                'is_all_caps': token.isupper(),
+                'is_all_lower': token.islower(),
+                'is_email': bool(re.match(r'[^@]+@[^@]+\.[^@]+', token)),
+                'word_len': len(token),
+                'prefix-1': token[0] if len(token) > 0 else '',
+                'prefix-2': token[:2] if len(token) > 1 else '',
+                'suffix-1': token[-1] if len(token) > 0 else '',
+                'suffix-2': token[-2:] if len(token) > 1 else '',
+            }
+            features.append(feat)
+        return features
+
+    def train(self, X, y):
+        X_vec = self.vectorizer.fit_transform(X)
+        trainer = crfsuite.Trainer(verbose=False)
+        for xseq, yseq in zip(X_vec.toarray().reshape(len(X), -1, len(self.vectorizer.feature_names_)), y):
+            trainer.append(xseq, yseq)
+        trainer.train(self.MODEL_PATH, aliases={
+            'max_iterations': 50,
+            'feature.minfreq': 1
+        })
+
+    def load(self, model_path):
+        self.model.open(model_path)
+
+    def predict(self, text):
+        tokens = word_tokenize(text, language='russian')
+        features = self.extract_features(tokens)
+        X_vec = self.vectorizer.transform(features).toarray()
+        return self.model.tag(X_vec)
+
+train
+import json
+from extractor import EntityExtractor
+from config import LABEL_STUDIO_JSON, MODEL_PATH
+
+def load_label_studio_data(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    X = []
+    y = []
+    for item in data:
+        text = item['data']['text']
+        tokens = word_tokenize(text, language='russian')
+        labels = ['O'] * len(tokens)
+        
+        for annotation in item['annotations']:
+            for result in annotation['result']:
+                value = result['value']
+                entity_type = result.get('type', 'labels')
+                if entity_type in ['fio', 'email', 'position']:
+                    start = value['start']
+                    end = value['end']
+                    # Преобразование в токены (упрощенная версия)
+                    # Здесь нужна более сложная логика выравнивания токенов
+        X.append(tokens)
+        y.append(labels)
+    return X, y
+
+extractor = EntityExtractor()
+X, y = load_label_studio_data(LABEL_STUDIO_JSON)
+extractor.train(X, y)
+
+text
+
+from extractor import EntityExtractor
+from config import MODEL_PATH, TEST_FILE
+
+def test_extraction():
+    extractor = EntityExtractor()
+    extractor.load(MODEL_PATH)
+    
+    with open(TEST_FILE, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    predictions = extractor.predict(text)
+    tokens = word_tokenize(text, language='russian')
+    
+    result = {field: [] for field in ['fio', 'email', 'position']}
+    current_entity = None
+    current_text = []
+    
+    for token, pred in zip(tokens, predictions):
+        if pred.startswith('B-'):
+            if current_entity:
+                result[current_entity].append(' '.join(current_text))
+            current_entity = pred[2:]
+            current_text = [token]
+        elif pred.startswith('I-'):
+            current_text.append(token)
+        else:
+            if current_entity:
+                result[current_entity].append(' '.join(current_text))
+                current_entity = None
+                current_text = []
+    
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+if __name__ == "__main__":
+    test_extraction()
+
