@@ -1,0 +1,128 @@
+import os
+import re
+from lxml import etree
+from pathlib import Path
+
+# Константы для настройки
+INPUT_XML_FILE = "dataset.xml"  # Путь к входному XML файлу
+OUTPUT_FOLDER = "output_files"  # Папка для сохранения результатов
+MAX_FILES_TO_CREATE = 1000      # Максимальное количество создаваемых файлов
+
+def clean_invalid_xml_chars(text):
+    """
+    Удаляет невалидные XML символы из текста
+    """
+    # Регулярное выражение для нахождения невалидных XML символов
+    invalid_xml_re = re.compile(
+        '[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x84\x86-\x9F\uFDD0-\uFDEF\uFFFE\uFFFF]'
+    )
+    return invalid_xml_re.sub('', text)
+
+def process_xml_file():
+    """
+    Основная функция для обработки XML файла и создания текстовых файлов
+    """
+    # Проверяем существование входного файла
+    if not os.path.exists(INPUT_XML_FILE):
+        print(f"Ошибка: Файл {INPUT_XML_FILE} не найден!")
+        return
+
+    # Создаем выходную папку если она не существует
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    
+    # Счетчик созданных файлов
+    files_created = 0
+    
+    try:
+        # Пытаемся прочитать и очистить XML файл
+        with open(INPUT_XML_FILE, 'r', encoding='utf-8') as file:
+            content = file.read()
+        
+        # Очищаем от невалидных XML символов
+        cleaned_content = clean_invalid_xml_chars(content)
+        
+        # Парсим XML с обработкой ошибок
+        parser = etree.XMLParser(recover=True, encoding='utf-8')
+        root = etree.fromstring(cleaned_content.encode('utf-8'), parser)
+        
+        # Обработка XML (пример - измените под свою структуру)
+        for i, element in enumerate(root):
+            if files_created >= MAX_FILES_TO_CREATE:
+                break
+                
+            # Пример обработки элемента - создание файла с текстом элемента
+            try:
+                text_content = etree.tostring(element, encoding='unicode', method='text')
+                text_content = text_content.strip()
+                
+                if text_content:  # Проверяем, что содержимое не пустое
+                    # Создаем файл
+                    output_file = os.path.join(OUTPUT_FOLDER, f"output_{files_created + 1}.txt")
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(text_content)
+                    
+                    files_created += 1
+                    print(f"Создан файл: {output_file}")
+                    
+            except Exception as e:
+                print(f"Ошибка при обработке элемента {i}: {e}")
+                continue
+                
+        print(f"Успешно создано {files_created} файлов.")
+        
+    except etree.XMLSyntaxError as e:
+        print(f"Ошибка синтаксиса XML: {e}")
+        # Показываем контекст ошибки
+        try:
+            with open(INPUT_XML_FILE, 'r', encoding='utf-8') as file:
+                lines = file.readlines()
+                error_line = e.position[0]
+                start = max(0, error_line - 3)
+                end = min(len(lines), error_line + 2)
+                
+                print(f"Контекст ошибки (строки {start+1}-{end}):")
+                for i in range(start, end):
+                    marker = ">>> " if i + 1 == error_line else "    "
+                    print(f"{marker}{i+1}: {lines[i].strip()}")
+        except:
+            print("Не удалось показать контекст ошибки.")
+            
+    except UnicodeDecodeError:
+        print("Ошибка кодировки файла. Пробуем альтернативные кодировки...")
+        # Пробуем разные кодировки
+        encodings = ['cp1251', 'iso-8859-1', 'cp1252']
+        for encoding in encodings:
+            try:
+                with open(INPUT_XML_FILE, 'r', encoding=encoding) as file:
+                    content = file.read()
+                
+                cleaned_content = clean_invalid_xml_chars(content)
+                parser = etree.XMLParser(recover=True, encoding=encoding)
+                root = etree.fromstring(cleaned_content.encode(encoding), parser)
+                print(f"Файл успешно прочитан с кодировкой {encoding}")
+                # Дальнейшая обработка...
+                break
+            except Exception as e:
+                print(f"Кодировка {encoding} не подошла: {e}")
+                continue
+        else:
+            print("Не удалось определить кодировку файла.")
+            
+    except Exception as e:
+        print(f"Неожиданная ошибка: {e}")
+
+if __name__ == "__main__":
+    process_xml_file()
+
+# Просмотр проблемной строки
+with open(INPUT_XML_FILE, 'r', encoding='utf-8') as file:
+    lines = file.readlines()
+    if len(lines) >= 465506:
+        problem_line = lines[465505]  # Индексация с 0
+        print(f"Проблемная строка (465506): '{problem_line.strip()}'")
+        if len(problem_line) >= 81:
+            print(f"Символ в колонке 81: '{problem_line[80]}' (код: {ord(problem_line[80])})")
+        else:
+            print("Строка короче 81 символа")
+    else:
+        print("Файл содержит меньше 465506 строк")
