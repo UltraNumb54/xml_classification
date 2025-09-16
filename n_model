@@ -1,0 +1,143 @@
+# config.py
+INPUT_CSV_PATH = "data/annotations.csv"
+TEST_FILE_PATH = "data/test_text.txt"
+OUTPUT_JSON_PATH = "results.json"
+
+# train_model.py
+import re
+import csv
+import json
+from collections import defaultdict
+from typing import List, Dict, Any
+import ast
+
+def parse_annotations(annotation_str: str) -> List[Dict[str, Any]]:
+    """Парсит строку с аннотациями из Label Studio"""
+    try:
+        return ast.literal_eval(annotation_str)
+    except:
+        return []
+
+def extract_entities_from_annotations(csv_path: str) -> Dict[str, List[str]]:
+    """Извлекает сущности из размеченных данных"""
+    entities = defaultdict(list)
+    
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if 'label' not in row or 'text' not in row:
+                continue
+                
+            annotations = parse_annotations(row['label'])
+            text = row['text']
+            
+            for ann in annotations:
+                if 'start' in ann and 'end' in ann and 'labels' in ann:
+                    entity_text = text[ann['start']:ann['end']]
+                    for label in ann['labels']:
+                        if label in ['fio', 'email', 'position']:
+                            entities[label].append(entity_text)
+    
+    # Убираем дубликаты
+    return {k: list(set(v)) for k, v in entities.items()}
+
+def extract_emails(text: str) -> List[str]:
+    """Извлекает email с помощью regex"""
+    pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    return re.findall(pattern, text)
+
+def extract_fio(text: str, fio_list: List[str]) -> List[str]:
+    """Извлекает ФИО с помощью словаря из аннотаций"""
+    found = []
+    for fio in fio_list:
+        if fio in text:
+            found.append(fio)
+    return found
+
+def extract_positions(text: str, position_list: List[str]) -> List[str]:
+    """Извлекает должности с помощью словаря из аннотаций"""
+    found = []
+    text_lower = text.lower()
+    for position in position_list:
+        if position.lower() in text_lower:
+            found.append(position)
+    return found
+
+def process_text_file(file_path: str, entities: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """Обрабатывает текстовый файл и извлекает сущности"""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    return {
+        "emails": extract_emails(text),
+        "fios": extract_fio(text, entities.get('fio', [])),
+        "positions": extract_positions(text, entities.get('position', []))
+    }
+
+if __name__ == "__main__":
+    # Извлекаем сущности из размеченных данных
+    entities = extract_entities_from_annotations(INPUT_CSV_PATH)
+    
+    # Обрабатываем целевой файл
+    results = process_text_file(TEST_FILE_PATH, entities)
+    
+    # Сохраняем результаты
+    with open(OUTPUT_JSON_PATH, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    
+    print("Обработка завершена. Результаты сохранены в", OUTPUT_JSON_PATH)
+
+# test_model.py
+import json
+from train_model import process_text_file, extract_entities_from_annotations
+
+def test_extraction():
+    """Тестирует извлечение сущностей"""
+    # Загружаем сущности из размеченных данных
+    entities = extract_entities_from_annotations("data/annotations.csv")
+    
+    # Обрабатываем тестовый файл
+    results = process_text_file("data/test_text.txt", entities)
+    
+    # Проверяем структуру результатов
+    assert isinstance(results, dict)
+    assert 'emails' in results
+    assert 'fios' in results
+    assert 'positions' in results
+    
+    print("Тест пройден! Результаты:")
+    print(json.dumps(results, ensure_ascii=False, indent=2))
+    
+    # Дополнительная проверка для отладки
+    print("\nДетализация:")
+    print("Найдено emails:", len(results['emails']))
+    print("Найдено ФИО:", len(results['fios']))
+    print("Найдено должностей:", len(results['positions']))
+
+if __name__ == "__main__":
+    test_extraction()
+
+# process_multiple_files.py
+import os
+from train_model import process_text_file, extract_entities_from_annotations
+
+def process_directory(input_dir: str, output_dir: str):
+    """Обрабатывает все файлы в директории"""
+    entities = extract_entities_from_annotations("data/annotations.csv")
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    for filename in os.listdir(input_dir):
+        if filename.endswith('.txt'):
+            input_path = os.path.join(input_dir, filename)
+            results = process_text_file(input_path, entities)
+            
+            output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.json")
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+    
+    print(f"Обработано {len(os.listdir(input_dir))} файлов")
+
+if __name__ == "__main__":
+    process_directory("input_files", "output_results")
